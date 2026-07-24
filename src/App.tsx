@@ -26,11 +26,9 @@ function App() {
             return gameCopy;
           }
         } catch {
-          // chess.js throws on illegal moves in some versions instead of
-          // returning null — treat that the same as an illegal move.
+          // Illegal move
         }
 
-        // Illegal move: return the unchanged game so the board snaps back.
         return currentGame;
       });
 
@@ -41,10 +39,7 @@ function App() {
 
   const onPieceDrop = useCallback(
     ({ sourceSquare, targetSquare }: PieceDropHandlerArgs): boolean => {
-      // Dropped off the board entirely.
-      if (!targetSquare) {
-        return false;
-      }
+      if (!targetSquare) return false;
 
       return makeMove(sourceSquare, targetSquare, "q");
     },
@@ -52,79 +47,116 @@ function App() {
   );
 
   const resetGame = () => {
-  setGame(new Chess());
-};
+    setGame(new Chess());
+  };
+
+  const getGameStatus = () => {
+    if (game.isCheckmate()) return "Checkmate";
+    if (game.isDraw()) return "Draw";
+    if (game.isCheck()) return "Check";
+    return "In Progress";
+  };
 
   return (
-  <div className="min-h-screen bg-slate-900 flex items-center justify-center p-8">
-    <div className="w-full max-w-6xl bg-white rounded-3xl shadow-2xl p-8">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-gray-900 flex items-center justify-center p-8">
+      <div className="w-full max-w-6xl bg-white rounded-3xl shadow-2xl p-8">
 
-      <h1 className="text-4xl font-bold text-center mb-2">
-        ♟️ Chess UI
-      </h1>
+        <h1 className="text-4xl font-bold text-center mb-2">
+          ♟️ Chess UI
+        </h1>
 
-      <p className="text-center text-gray-500 mb-8">
-        Built using React, TypeScript, chess.js & react-chessboard
-      </p>
+        <p className="text-center text-gray-500 mb-8">
+          Built using React, TypeScript, chess.js & react-chessboard
+        </p>
 
-      <div className="flex flex-col lg:flex-row justify-center items-start gap-10">
+        <div className="flex flex-col lg:flex-row justify-center items-start gap-10">
 
-        <div style={{ width: 550 }}>
-          <Chessboard
-            options={{
-              position: game.fen(),
-              onPieceDrop,
-              id: "main-board",
-            }}
-          />
-        </div>
+          <div style={{ width: 550 }}>
+            <Chessboard
+              options={{
+                id: "main-board",
+                position: game.fen(),
+                onPieceDrop,
 
-        <div className="w-full lg:w-80">
+                darkSquareStyle: {
+                  backgroundColor: "#769656",
+                },
 
-          <div className="bg-gray-100 rounded-xl p-5 shadow">
+                lightSquareStyle: {
+                  backgroundColor: "#eeeed2",
+                },
+              }}
+            />
+          </div>
 
-            <h2 className="text-xl font-semibold mb-4">
-              Game Information
-            </h2>
+          <div className="w-full lg:w-80">
 
-            <div className="space-y-3">
+            <div className="bg-gray-100 rounded-xl p-6 shadow-lg">
 
-              <div>
-                <p className="text-gray-500 text-sm">
-                  Current Turn
-                </p>
+              <h2 className="text-xl font-semibold mb-5">
+                Game Information
+              </h2>
 
-                <p className="text-lg font-bold">
-                  {game.turn() === "w" ? "White" : "Black"}
-                </p>
-              </div>
+              <div className="space-y-5">
 
-              <div>
-                <p className="text-gray-500 text-sm">
-                  Current Position (FEN)
-                </p>
+                <div>
+                  <p className="text-sm text-gray-500">
+                    Current Turn
+                  </p>
 
-                <p className="text-xs break-all">
-                  {game.fen()}
-                </p>
+                  <p className="text-lg font-bold">
+                    {game.turn() === "w" ? "♔ White" : "♚ Black"}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-sm text-gray-500">
+                    Game Status
+                  </p>
+
+                  <p
+                    className={`text-lg font-bold ${
+                      game.isCheckmate()
+                        ? "text-red-600"
+                        : game.isCheck()
+                        ? "text-yellow-600"
+                        : game.isDraw()
+                        ? "text-gray-600"
+                        : "text-green-600"
+                    }`}
+                  >
+                    {getGameStatus()}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-sm text-gray-500">
+                    Current Position (FEN)
+                  </p>
+
+                  <p className="text-xs break-all bg-white rounded-md p-2 border">
+                    {game.fen()}
+                  </p>
+                </div>
+
+                <button
+                  onClick={resetGame}
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl transition font-semibold"
+                >
+                  Reset Game
+                </button>
+
               </div>
 
             </div>
-            <button
-  onClick={resetGame}
-  className="mt-6 w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl transition"
->
-  Reset Game
-</button>
+
           </div>
 
         </div>
 
       </div>
-
     </div>
-  </div>
-);
+  );
 }
 
 export default App;
