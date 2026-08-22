@@ -48,6 +48,9 @@ function App() {
   const [legalTargets, setLegalTargets] = useState<Square[]>([]);
   const [showGameOverModal, setShowGameOverModal] = useState(false);
 
+  const [aiNarrative, setAiNarrative] = useState<string>("");
+  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+
   const clearSelection = useCallback(() => {
     setSelectedSquare(null);
     setLegalTargets([]);
@@ -56,6 +59,9 @@ function App() {
   const makeMove = useCallback(
     (from: string, to: string, promotion: string = "q"): boolean => {
       try {
+        const beforeFen = gameRef.current.fen();
+
+        const playerColor = gameRef.current.turn() === "w" ? "WHITE" : "BLACK";
         const result = gameRef.current.move({
           from: from as Square,
           to: to as Square,
@@ -63,8 +69,39 @@ function App() {
         });
 
         if (result) {
+          const newFen = gameRef.current.fen();
+
           setLastMove({ from: result.from, to: result.to });
-          setFen(gameRef.current.fen());
+          setFen(newFen);
+
+          fetch("http://localhost:5000/api/analyze", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              beforeFen: beforeFen,
+              afterFen: newFen,
+              playerMove: result.from + result.to,
+              playerColor: playerColor,
+            }),
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              console.log("Stockfish analysis:", data);
+
+              if (data.narrative) {
+                setAiNarrative(data.narrative);
+              }
+            })
+            .catch((error) => {
+              console.error("Stockfish API error:", error);
+              setAiNarrative("Sorry, I couldn't analyze this move.");
+            })
+            .finally(() => {
+              setIsAnalyzing(false);
+            });
+
           return true;
         }
       } catch {
@@ -73,7 +110,7 @@ function App() {
 
       return false;
     },
-    []
+    [],
   );
 
   // Rebuilds the game up to (but not including) the given global half-move
@@ -104,7 +141,7 @@ function App() {
       clearSelection();
       setShowGameOverModal(false);
     },
-    [clearSelection]
+    [clearSelection],
   );
 
   // Undoes a specific half-move (identified by its global index in the
@@ -113,7 +150,7 @@ function App() {
     (index: number) => {
       rewindToIndex(index);
     },
-    [rewindToIndex]
+    [rewindToIndex],
   );
 
   // Quick "undo last move" action.
@@ -129,7 +166,7 @@ function App() {
       if (!targetSquare) return false;
       return makeMove(sourceSquare, targetSquare, "q");
     },
-    [makeMove, clearSelection]
+    [makeMove, clearSelection],
   );
 
   const onSquareClick = useCallback(
@@ -161,7 +198,7 @@ function App() {
 
       clearSelection();
     },
-    [selectedSquare, legalTargets, makeMove, clearSelection]
+    [selectedSquare, legalTargets, makeMove, clearSelection],
   );
 
   const resetGame = useCallback(() => {
@@ -249,7 +286,11 @@ function App() {
       }
     });
 
-    return { moveHistory: pairs, capturedByWhite: byWhite, capturedByBlack: byBlack };
+    return {
+      moveHistory: pairs,
+      capturedByWhite: byWhite,
+      capturedByBlack: byBlack,
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fen]);
 
@@ -294,21 +335,23 @@ function App() {
       darkSquareStyle: { backgroundColor: "#769656" },
       lightSquareStyle: { backgroundColor: "#eeeed2" },
     }),
-    [fen, onPieceDrop, onSquareClick, squareStyles]
+    [fen, onPieceDrop, onSquareClick, squareStyles],
   );
 
   const game = gameRef.current;
-  const totalMoves = moveHistory.length > 0
-    ? (moveHistory[moveHistory.length - 1].blackIndex ?? moveHistory[moveHistory.length - 1].whiteIndex) + 1
-    : 0;
+  const totalMoves =
+    moveHistory.length > 0
+      ? (moveHistory[moveHistory.length - 1].blackIndex ??
+          moveHistory[moveHistory.length - 1].whiteIndex) + 1
+      : 0;
 
   const statusColorClass = game.isCheckmate()
     ? "text-red-600"
     : game.isCheck()
-    ? "text-yellow-600"
-    : game.isDraw()
-    ? "text-gray-600"
-    : "text-green-600";
+      ? "text-yellow-600"
+      : game.isDraw()
+        ? "text-gray-600"
+        : "text-green-600";
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-gray-900 flex items-center justify-center p-4 sm:p-8">
@@ -329,6 +372,24 @@ function App() {
 
           {/* Right panel */}
           <div className="w-full lg:w-96 flex flex-col gap-4">
+            {/* AI Coach Card */}
+            <section className="bg-blue-50 border border-blue-200 rounded-2xl p-5 shadow-sm">
+              <h2 className="text-lg font-semibold mb-3 text-blue-900">
+                🤖 AI Chess Coach
+              </h2>
+
+              {isAnalyzing ? (
+                <p className="text-sm text-blue-700">Analyzing your move...</p>
+              ) : aiNarrative ? (
+                <div className="text-sm text-gray-700 whitespace-pre-line leading-relaxed">
+                  {aiNarrative}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-400">
+                  Make a move to get AI coaching.
+                </p>
+              )}
+            </section>
             {/* Game Information Card */}
             <section className="bg-gray-50 border border-gray-200 rounded-2xl p-5 shadow-sm">
               <h2 className="text-lg font-semibold mb-4 text-gray-800 tracking-tight">
@@ -462,19 +523,22 @@ function App() {
                             </div>
                           </td>
                           <td className="py-1.5 px-2 font-mono text-gray-800">
-                            {pair.black !== undefined && pair.blackIndex !== undefined && (
-                              <div className="flex items-center gap-1.5">
-                                <span>{pair.black}</span>
-                                <button
-                                  onClick={() => undoMoveAtIndex(pair.blackIndex as number)}
-                                  title={`Undo ${pair.black}`}
-                                  aria-label={`Undo move ${pair.black}`}
-                                  className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-xs text-gray-400 hover:text-red-500 transition"
-                                >
-                                  ↺
-                                </button>
-                              </div>
-                            )}
+                            {pair.black !== undefined &&
+                              pair.blackIndex !== undefined && (
+                                <div className="flex items-center gap-1.5">
+                                  <span>{pair.black}</span>
+                                  <button
+                                    onClick={() =>
+                                      undoMoveAtIndex(pair.blackIndex as number)
+                                    }
+                                    title={`Undo ${pair.black}`}
+                                    aria-label={`Undo move ${pair.black}`}
+                                    className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-xs text-gray-400 hover:text-red-500 transition"
+                                  >
+                                    ↺
+                                  </button>
+                                </div>
+                              )}
                           </td>
                         </tr>
                       ))}
