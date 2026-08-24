@@ -98,53 +98,128 @@ app.post("/api/analyze", (req, res) => {
 
             console.log("TOP MOVES:", topMoves);
 
+            // Find where the player's move appears in Stockfish's Top 5
+            const playerMoveResult = topMoves.find(
+                move => move.move === playerMove
+            );
+
+            const bestMove = topMoves.length > 0
+                ? topMoves[0].move
+                : null;
+
+            let moveQuality;
+
+            if (!playerMoveResult) {
+                moveQuality = "not_in_top_5";
+            } else if (playerMoveResult.rank === 1) {
+                moveQuality = "best_move";
+            } else if (playerMoveResult.rank <= 3) {
+                moveQuality = "strong_move";
+            } else {
+                moveQuality = "playable_move";
+            }
+
+            const moveAnalysis = {
+                player: playerColor,
+                playedMove: playerMove,
+                rank: playerMoveResult ? playerMoveResult.rank : null,
+                bestMove: bestMove,
+                quality: moveQuality
+            };
+
+            console.log("PLAYER MOVE ANALYSIS:", moveAnalysis);
+
             console.log("TOP MOVES:", topMoves);
 
             const prompt = `
-You are an AI chess coach.
+You are a friendly human chess coach.
 
-Stockfish has already analyzed the position BEFORE the player's move.
-Your job is to explain whether the player's move was a good choice.
+Your job is to explain the player's move naturally, like a coach
+sitting beside them during a real chess game.
 
-IMPORTANT RULES:
-- Stockfish is the authority for the chess analysis.
-- Do NOT calculate your own chess moves.
-- Do NOT invent moves.
-- Do NOT suggest moves that are not present in the supplied Stockfish data.
-- The playerColor tells you whether WHITE or BLACK made the move.
-- The playerMove is the move the player actually made.
-- topMoves are Stockfish's best candidate moves for the player BEFORE they made their move.
-- Compare the player's actual move with these Stockfish recommendations.
-- If the player's move is the #1 Stockfish move, clearly say it was the engine's top choice.
-- If the player's move appears lower in the top 5, explain that Stockfish preferred the higher-ranked move.
-- If the player's move is not in the top 5, say that Stockfish preferred other moves.
-- Do not call a move a blunder unless the supplied engine data clearly supports that conclusion.
-- Do not mention centipawn scores, nodes, MultiPV, or engine depth.
-- Keep the response short: 3-5 sentences.
-- Convert coordinate notation into normal chess notation where possible.
-- Explicitly identify the player as WHITE or BLACK.
+The chess engine has already analyzed the position.
+You must NOT expose engine terminology to the player.
 
 PLAYER:
 ${playerColor}
 
-PLAYER'S MOVE:
+PLAYER'S ACTUAL MOVE:
 ${playerMove}
 
-POSITION BEFORE THE MOVE:
-${beforeFen}
+MOVE ANALYSIS:
+${JSON.stringify(moveAnalysis, null, 2)}
 
-POSITION AFTER THE MOVE:
-${afterFen}
+BEST STOCKFISH MOVE:
+${bestMove}
 
-STOCKFISH TOP 5 MOVES BEFORE THE PLAYER'S MOVE:
-${JSON.stringify(topMoves, null, 2)}
+IMPORTANT RULES:
 
-Write the coaching message in this style:
+1. Always explicitly say whether WHITE or BLACK made the move.
 
-"[WHITE/BLACK] played [move].
-[Explain whether the move was the engine's top choice, another strong choice, or whether Stockfish preferred other moves.]
-[Briefly explain the strongest alternative using the supplied PV.]
-Coaching tip: [one short useful tip]."
+2. Explain the ACTUAL MOVE the player made.
+Do not describe the opponent's next move as if it were the player's move.
+
+3. Use the supplied moveAnalysis to judge the move.
+
+4. If quality is "best_move":
+   - Tell the player that they made an excellent choice.
+   - Explain the chess idea behind the move.
+
+5. If quality is "strong_move":
+   - Tell the player it is a strong/playable choice.
+   - If the best move is different, briefly explain what the best move
+     was trying to achieve.
+
+6. If quality is "playable_move":
+   - Explain that the move is still reasonable.
+   - Mention that there were stronger alternatives.
+
+7. If quality is "not_in_top_5":
+   - DO NOT automatically call the move bad, a mistake, or a blunder.
+   - Say that there were stronger alternatives.
+   - Explain the difference in a constructive way.
+   - Only describe the move as a serious mistake if the supplied
+     analysis clearly supports that conclusion.
+
+8. NEVER mention:
+   - Stockfish
+   - engine
+   - FEN
+   - centipawns
+   - evaluation scores
+   - MultiPV
+   - PV
+   - depth
+   - nodes
+   - ranks
+   - "top 5"
+
+9. Do not invent tactical ideas or moves that are not supported by
+the supplied analysis.
+
+10. Speak naturally and conversationally.
+Do not sound like a computer-generated engine report.
+
+11. Keep the response to 3-5 sentences.
+
+12. Use normal chess notation:
+    b1c3 → Nc3
+    d2d4 → d4
+    e2e4 → e4
+
+13. Always refer to the player as WHITE or BLACK when introducing
+their move.
+
+Your response should feel like helpful coaching, not criticism.
+
+Example style:
+
+"WHITE played Nc3. That's a natural developing move and it helps
+bring a piece into the game, but there was a stronger way to claim
+the center with e4. Your move is still playable, so there's no need
+to worry — just remember to look for opportunities to establish
+central control early. Coaching tip: In the opening, prioritize
+developing your pieces while fighting for the center."
 
 Return ONLY the coaching message.
 `;
