@@ -1,8 +1,9 @@
 require("dotenv").config();
 
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
-const { spawn } = require("child_process");
+const { spawn, execFile } = require("child_process");
 const { GoogleGenAI } = require("@google/genai");
 
 const ai = new GoogleGenAI({
@@ -13,6 +14,7 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.use("/audio", express.static(__dirname));
 
 const PORT = 5000;
 
@@ -230,24 +232,59 @@ Return ONLY the coaching message.
                     contents: prompt,
                 });
 
-                res.json({
-                    beforeFen: beforeFen,
-                    afterFen: afterFen,
-                    playerColor: playerColor,
-                    playerMove: playerMove,
-                    topMoves: topMoves,
-                    narrative: geminiResponse.text,
-                });
+                const narrative = geminiResponse.text.trim();
+
+                console.log("GEMINI NARRATION:", narrative);
+
+                const audioFileName = `narration-${Date.now()}.mp3`;
+
+                execFile(
+                    "python",
+                    ["tts.py", narrative, audioFileName],
+                    { cwd: __dirname },
+                    (error, stdout, stderr) => {
+
+                        if (error) {
+                            console.error("TTS error:", error);
+                            console.error("TTS stderr:", stderr);
+
+                            return res.status(500).json({
+                                beforeFen,
+                                afterFen,
+                                playerColor,
+                                playerMove,
+                                topMoves,
+                                moveAnalysis,
+                                narrative,
+                                error: "TTS generation failed"
+                            });
+                        }
+
+                        console.log(stdout);
+
+                        res.json({
+                            beforeFen,
+                            afterFen,
+                            playerColor,
+                            playerMove,
+                            topMoves,
+                            moveAnalysis,
+                            narrative,
+                            audioUrl: `/audio/${audioFileName}`
+                        });
+                    }
+                );
 
             } catch (error) {
                 console.error("Gemini error:", error);
 
                 res.status(500).json({
-                    beforeFen: beforeFen,
-                    afterFen: afterFen,
-                    playerColor: playerColor,
-                    playerMove: playerMove,
-                    topMoves: topMoves,
+                    beforeFen,
+                    afterFen,
+                    playerColor,
+                    playerMove,
+                    topMoves,
+                    moveAnalysis,
                     error: "Gemini narration failed"
                 });
             }

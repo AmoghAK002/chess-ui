@@ -86,12 +86,30 @@ function App() {
               playerColor: playerColor,
             }),
           })
-            .then((response) => response.json())
+            .then((response) => {
+              if (!response.ok) {
+                throw new Error(`API error: ${response.status}`);
+              }
+
+              return response.json();
+            })
             .then((data) => {
               console.log("Stockfish analysis:", data);
 
+              // Show the AI coaching text
               if (data.narrative) {
                 setAiNarrative(data.narrative);
+              }
+
+              // Play the generated gTTS narration
+              if (data.audioUrl) {
+                const audio = new Audio(
+                  `http://localhost:5000${data.audioUrl}?t=${Date.now()}`,
+                );
+
+                audio.play().catch((error) => {
+                  console.error("Audio playback failed:", error);
+                });
               }
             })
             .catch((error) => {
