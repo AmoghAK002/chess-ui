@@ -5,6 +5,16 @@ import type { Square, PieceSymbol, Color, Move } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import type { PieceDropHandlerArgs } from "react-chessboard";
 
+type PendingMove = {
+  moveIndex: number;
+  moveNumber: number;
+  beforeFen: string;
+  afterFen: string;
+  playerMove: string;
+  san: string;
+  playerColor: "WHITE" | "BLACK";
+};
+
 type LastMove = {
   from: Square;
   to: Square;
@@ -50,6 +60,8 @@ function App() {
 
   const [aiNarrative, setAiNarrative] = useState<string>("");
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [pendingMove, setPendingMove] = useState<PendingMove | null>(null);
+  const [isExplaining, setIsExplaining] = useState(false);
 
   const clearSelection = useCallback(() => {
     setSelectedSquare(null);
@@ -62,6 +74,7 @@ function App() {
         const beforeFen = gameRef.current.fen();
 
         const playerColor = gameRef.current.turn() === "w" ? "WHITE" : "BLACK";
+
         const result = gameRef.current.move({
           from: from as Square,
           to: to as Square,
@@ -69,21 +82,74 @@ function App() {
         });
 
         if (result) {
-          const newFen = gameRef.current.fen();
+          const afterFen = gameRef.current.fen();
 
-          setLastMove({ from: result.from, to: result.to });
-          setFen(newFen);
+          // Global half-move index:
+          // 0 = White's first move
+          // 1 = Black's first move
+          // 2 = White's second move
+          // 3 = Black's second move...
+          const moveIndex = gameRef.current.history().length - 1;
 
-          fetch("http://localhost:5000/api/analyze", {
+          // Chess move number:
+          // White Nc3  -> 1
+          // Black e5   -> 1
+          // White Nf3  -> 2
+          const moveNumber = Math.floor(moveIndex / 2) + 1;
+
+          // Human-readable chess notation
+          const san = result.san;
+
+          // UCI-style notation
+          const uci = result.from + result.to;
+
+          const moveContext = {
+            moveIndex,
+            moveNumber,
+            playerColor,
+            san,
+            uci,
+            beforeFen,
+            afterFen,
+          };
+
+          console.log("MOVE CONTEXT:", moveContext);
+
+          setPendingMove({
+            moveIndex,
+            moveNumber,
+            beforeFen,
+            afterFen,
+            playerMove: uci,
+            san,
+            playerColor,
+          });
+
+          setLastMove({
+            from: result.from,
+            to: result.to,
+          });
+
+          setFen(afterFen);
+
+          setIsAnalyzing(true);
+
+          /* fetch("http://localhost:5000/api/analyze", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              beforeFen: beforeFen,
-              afterFen: newFen,
-              playerMove: result.from + result.to,
-              playerColor: playerColor,
+              moveIndex,
+              moveNumber,
+
+              beforeFen,
+              afterFen,
+
+              playerMove: uci,
+              san,
+
+              playerColor,
             }),
           })
             .then((response) => {
@@ -96,12 +162,11 @@ function App() {
             .then((data) => {
               console.log("Stockfish analysis:", data);
 
-              // Show the AI coaching text
               if (data.narrative) {
                 setAiNarrative(data.narrative);
               }
 
-              // Play the generated gTTS narration
+              // Play the narration generated specifically for this move
               if (data.audioUrl) {
                 const audio = new Audio(
                   `http://localhost:5000${data.audioUrl}?t=${Date.now()}`,
@@ -118,7 +183,7 @@ function App() {
             })
             .finally(() => {
               setIsAnalyzing(false);
-            });
+            });*/
 
           return true;
         }
@@ -218,6 +283,49 @@ function App() {
     },
     [selectedSquare, legalTargets, makeMove, clearSelection],
   );
+  const explainMove = useCallback(async () => {
+    if (!pendingMove) return;
+
+    setIsExplaining(true);
+    setAiNarrative("");
+
+    try {
+      const response = await fetch("http://localhost:5000/api/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(pendingMove),
+      });
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      console.log("Coach analysis:", data);
+
+      if (data.narrative) {
+        setAiNarrative(data.narrative);
+      }
+
+      if (data.audioUrl) {
+        const audio = new Audio(
+          `http://localhost:5000${data.audioUrl}?t=${Date.now()}`,
+        );
+
+        audio.play().catch((error) => {
+          console.error("Audio playback failed:", error);
+        });
+      }
+    } catch (error) {
+      console.error("Explain move error:", error);
+      setAiNarrative("Sorry, I couldn't analyze this move.");
+    } finally {
+      setIsExplaining(false);
+    }
+  }, [pendingMove]);
 
   const resetGame = useCallback(() => {
     gameRef.current = new Chess();
@@ -396,12 +504,26 @@ function App() {
                 🤖 AI Chess Coach
               </h2>
 
-              {isAnalyzing ? (
+              {isExplaining ? (
                 <p className="text-sm text-blue-700">Analyzing your move...</p>
               ) : aiNarrative ? (
                 <div className="text-sm text-gray-700 whitespace-pre-line leading-relaxed">
                   {aiNarrative}
                 </div>
+              ) : pendingMove ? (
+                <>
+                  <p className="text-sm text-gray-500 mb-3">
+                    {pendingMove.playerColor} played{" "}
+                    <strong>{pendingMove.san}</strong>.
+                  </p>
+
+                  <button
+                    onClick={explainMove}
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl font-semibold transition"
+                  >
+                    🧠 Explain Move
+                  </button>
+                </>
               ) : (
                 <p className="text-sm text-gray-400">
                   Make a move to get AI coaching.
