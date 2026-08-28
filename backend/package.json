@@ -2,18 +2,23 @@
   "name": "backend",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js",
+    "dev": "node --watch server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@genkit-ai/core": "^1.41.0",
+    "@genkit-ai/googleai": "^1.28.0",
     "@google/genai": "^2.18.0",
+    "chess.js": "^1.4.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "wav": "^1.0.2"
   }
 }

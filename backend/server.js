@@ -3,8 +3,10 @@ require("dotenv").config();
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
-const { spawn, execFile } = require("child_process");
+const { spawn } = require("child_process");
 const { GoogleGenAI } = require("@google/genai");
+const wav = require("wav");
+const { Chess } = require("chess.js");
 
 const ai = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY,
@@ -14,11 +16,204 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
-app.use("/audio", express.static(__dirname));
 
 const PORT = 5000;
 
-app.post("/api/analyze", (req, res) => {
+/**
+ * Converts PCM buffer to WAV Base64 Data URI in memory
+ */
+function pcmToWavDataUri(pcmBuffer, sampleRate = 24000) {
+    return new Promise((resolve, reject) => {
+        const writer = new wav.Writer({
+            channels: 1,
+            sampleRate,
+            bitDepth: 16,
+        });
+
+        const chunks = [];
+
+        writer.on("data", (chunk) => {
+            chunks.push(chunk);
+        });
+
+        writer.on("end", () => {
+            const wavBuffer = Buffer.concat(chunks);
+            resolve("data:audio/wav;base64," + wavBuffer.toString("base64"));
+        });
+
+        writer.on("error", reject);
+
+        writer.write(pcmBuffer);
+        writer.end();
+    });
+}
+
+/**
+ * Runs Stockfish engine on a FEN position to depth 15 with MultiPV
+ */
+function analyzeFenWithStockfish(fen, depth = 15, multiPV = 5) {
+    return new Promise((resolve, reject) => {
+        const stockfishPath = path.join(__dirname, "stockfish-windows-x86-64-avx2.exe");
+        const stockfish = spawn(stockfishPath, [], { cwd: __dirname });
+
+        let output = "";
+        let isResolved = false;
+
+        const timer = setTimeout(() => {
+            if (!isResolved) {
+                isResolved = true;
+                stockfish.kill();
+                reject(new Error("Stockfish analysis timed out"));
+            }
+        }, 12000);
+
+        stockfish.stdout.on("data", (data) => {
+            output += data.toString();
+
+            if (output.includes("bestmove")) {
+                if (isResolved) return;
+                isResolved = true;
+                clearTimeout(timer);
+                stockfish.kill();
+
+                const lines = output.split(/\r?\n/);
+                const topMoves = [];
+
+                for (const line of lines) {
+                    if (!line.includes(`info depth ${depth}`)) {
+                        continue;
+                    }
+
+                    const multipvMatch = line.match(/multipv (\d+)/);
+                    const scoreMatch = line.match(/score cp (-?\d+)/);
+                    const mateMatch = line.match(/score mate (-?\d+)/);
+                    const pvIndex = line.lastIndexOf(" pv ");
+
+                    if (!multipvMatch || pvIndex === -1) {
+                        continue;
+                    }
+
+                    const pv = line.substring(pvIndex + 4).trim();
+                    const moves = pv.split(/\s+/);
+
+                    if (moves.length === 0) {
+                        continue;
+                    }
+
+                    let san = moves[0];
+                    try {
+                        const chess = new Chess(fen);
+                        const moveResult = chess.move({
+                            from: moves[0].substring(0, 2),
+                            to: moves[0].substring(2, 4),
+                            promotion: moves[0].length > 4 ? moves[0][4] : undefined
+                        });
+                        if (moveResult) {
+                            san = moveResult.san;
+                        }
+                    } catch (e) {
+                        // Keep UCI as fallback
+                    }
+
+                    topMoves.push({
+                        rank: Number(multipvMatch[1]),
+                        move: moves[0],
+                        san: san,
+                        score: scoreMatch ? Number(scoreMatch[1]) : (mateMatch ? `mate ${mateMatch[1]}` : 0),
+                        pv: pv
+                    });
+                }
+
+                topMoves.sort((a, b) => a.rank - b.rank);
+                resolve(topMoves);
+            }
+        });
+
+        stockfish.stderr.on("data", (data) => {
+            console.error("STOCKFISH ERROR:", data.toString());
+        });
+
+        stockfish.on("error", (error) => {
+            if (!isResolved) {
+                isResolved = true;
+                clearTimeout(timer);
+                reject(error);
+            }
+        });
+
+        stockfish.stdin.write("uci\n");
+        stockfish.stdin.write(`setoption name MultiPV value ${multiPV}\n`);
+        stockfish.stdin.write("isready\n");
+        stockfish.stdin.write(`position fen ${fen}\n`);
+        stockfish.stdin.write(`go depth ${depth}\n`);
+    });
+}
+
+/**
+ * Generates TTS for a text segment using Gemini TTS directly via @google/genai
+ */
+async function generateTTSForText(text) {
+    if (!text || !text.trim()) return null;
+
+    try {
+        const ttsResponse = await ai.models.generateContent({
+            model: "gemini-2.5-flash-preview-tts",
+            contents: text,
+            config: {
+                responseModalities: ["AUDIO"],
+                speechConfig: {
+                    voiceConfig: {
+                        prebuiltVoiceConfig: {
+                            voiceName: "Algenib",
+                        },
+                    },
+                },
+            },
+        });
+
+        const part = ttsResponse.candidates?.[0]?.content?.parts?.[0];
+        if (part?.inlineData?.data) {
+            const pcmBuffer = Buffer.from(part.inlineData.data, "base64");
+            return await pcmToWavDataUri(pcmBuffer, 24000);
+        }
+    } catch (error) {
+        console.error("TTS generation error:", error.message);
+    }
+    return null;
+}
+
+/**
+ * Helper to safely extract JSON from Gemini text response
+ */
+function parseGeminiJson(rawText) {
+    let cleanText = rawText.trim();
+    if (cleanText.startsWith("```json")) {
+        cleanText = cleanText.replace(/^```json\s*/, "").replace(/\s*```$/, "");
+    } else if (cleanText.startsWith("```")) {
+        cleanText = cleanText.replace(/^```\s*/, "").replace(/\s*```$/, "");
+    }
+
+    try {
+        return JSON.parse(cleanText);
+    } catch (e) {
+        console.error("Failed to parse Gemini JSON:", e.message, "Raw text:", rawText);
+        return {
+            narrative: rawText,
+            segments: [
+                {
+                    text: rawText,
+                    move: null
+                }
+            ]
+        };
+    }
+}
+
+/**
+ * POST /api/analyze
+ * Analyzes a played move: Stockfish before/after position analysis, Gemini narration & segments, TTS.
+ */
+app.post("/api/analyze", async (req, res) => {
     const {
         moveIndex,
         moveNumber,
@@ -39,454 +234,250 @@ app.post("/api/analyze", (req, res) => {
         !playerColor
     ) {
         return res.status(400).json({
-            error:
-                "moveIndex, moveNumber, beforeFen, afterFen, playerMove, san and playerColor are required"
+            error: "moveIndex, moveNumber, beforeFen, afterFen, playerMove, san and playerColor are required"
         });
     }
 
-    console.log("Move index:", moveIndex);
-    console.log("Move number:", moveNumber);
-    console.log("Player:", playerColor);
-    console.log("SAN:", san);
-    console.log("UCI:", playerMove);
-    console.log("Received before FEN:", beforeFen);
-    console.log("After FEN:", afterFen);
+    console.log(`[ANALYZE] Move #${moveNumber} (${playerColor}): SAN=${san}, UCI=${playerMove}`);
 
-    const stockfish = spawn(
-        "./stockfish-windows-x86-64-avx2.exe",
-        [],
-        {
-            cwd: __dirname
+    try {
+        const [topMovesBefore, topMovesAfter] = await Promise.all([
+            analyzeFenWithStockfish(beforeFen, 15, 5).catch(err => {
+                console.error("Stockfish BEFORE error:", err);
+                return [];
+            }),
+            analyzeFenWithStockfish(afterFen, 15, 5).catch(err => {
+                console.error("Stockfish AFTER error:", err);
+                return [];
+            })
+        ]);
+
+        const playerMoveResult = topMovesBefore.find(m => m.move === playerMove);
+        const bestMoveBefore = topMovesBefore.length > 0 ? topMovesBefore[0] : null;
+        const bestResponseAfter = topMovesAfter.length > 0 ? topMovesAfter[0] : null;
+
+        let moveQuality = "playable_move";
+        if (!playerMoveResult) {
+            moveQuality = "not_in_top_5";
+        } else if (playerMoveResult.rank === 1) {
+            moveQuality = "best_move";
+        } else if (playerMoveResult.rank <= 3) {
+            moveQuality = "strong_move";
         }
-    );
 
-    let output = "";
+        const moveAnalysis = {
+            player: playerColor,
+            playedMove: playerMove,
+            san: san,
+            rank: playerMoveResult ? playerMoveResult.rank : null,
+            bestMoveBefore: bestMoveBefore ? bestMoveBefore.san : null,
+            bestMoveBeforeUci: bestMoveBefore ? bestMoveBefore.move : null,
+            bestResponseAfter: bestResponseAfter ? bestResponseAfter.san : null,
+            bestResponseAfterUci: bestResponseAfter ? bestResponseAfter.move : null,
+            quality: moveQuality
+        };
 
-    stockfish.stdout.on("data", async (data) => {
-        const text = data.toString();
+        const prompt = `
+You are a friendly, expert human chess coach sitting next to the player in a live game.
 
-        console.log("STOCKFISH:", text);
+The player just made a move:
+- Player: ${playerColor}
+- Move Number: ${moveNumber}
+- Played Move (SAN): ${san}
+- Played Move (UCI): ${playerMove}
+- Position Before Move (FEN): ${beforeFen}
+- Position After Move (FEN): ${afterFen}
 
-        output += text;
-        if (output.includes("bestmove")) {
-            console.log("Analysis complete");
+Stockfish Analysis BEFORE move (choices available to ${playerColor}):
+${JSON.stringify(topMovesBefore, null, 2)}
 
-            const lines = output.split(/\r?\n/);
+Stockfish Analysis AFTER move (opponent's best response choices):
+${JSON.stringify(topMovesAfter, null, 2)}
 
-            const topMoves = [];
-
-            for (const line of lines) {
-
-                // We only want the final depth 15 lines
-                if (!line.includes("info depth 15")) {
-                    continue;
-                }
-
-                const multipvMatch = line.match(/multipv (\d+)/);
-                const scoreMatch = line.match(/score cp (-?\d+)/);
-
-                // Find the LAST " pv " in the line
-                const pvIndex = line.lastIndexOf(" pv ");
-
-                if (!multipvMatch || !scoreMatch || pvIndex === -1) {
-                    continue;
-                }
-
-                // Everything after the final " pv " is the actual chess PV
-                const pv = line
-                    .substring(pvIndex + 4)
-                    .trim();
-
-                const moves = pv.split(/\s+/);
-
-                if (moves.length === 0) {
-                    continue;
-                }
-
-                topMoves.push({
-                    rank: Number(multipvMatch[1]),
-                    move: moves[0],
-                    score: Number(scoreMatch[1]),
-                    pv: pv
-                });
-            }
-
-            topMoves.sort((a, b) => a.rank - b.rank);
-
-            console.log("TOP MOVES:", topMoves);
-
-            // Find where the player's move appears in Stockfish's Top 5
-            const playerMoveResult = topMoves.find(
-                move => move.move === playerMove
-            );
-
-            const bestMove = topMoves.length > 0
-                ? topMoves[0].move
-                : null;
-
-            let moveQuality;
-
-            if (!playerMoveResult) {
-                moveQuality = "not_in_top_5";
-            } else if (playerMoveResult.rank === 1) {
-                moveQuality = "best_move";
-            } else if (playerMoveResult.rank <= 3) {
-                moveQuality = "strong_move";
-            } else {
-                moveQuality = "playable_move";
-            }
-
-            const moveAnalysis = {
-                player: playerColor,
-                playedMove: playerMove,
-                rank: playerMoveResult ? playerMoveResult.rank : null,
-                bestMove: bestMove,
-                quality: moveQuality
-            };
-
-            console.log("PLAYER MOVE ANALYSIS:", moveAnalysis);
-
-            console.log("TOP MOVES:", topMoves);
-
-            const prompt = `
-You are a friendly, expert human chess coach.
-
-You are sitting beside the player and coaching them during a live chess game.
-
-Your response will appear inside a chat-style AI Coach interface and will also be spoken aloud using text-to-speech.
-
-Your response must therefore feel like a natural conversation between a chess coach and a student — NOT like a chess engine report.
-
-==================================================
-CURRENT MOVE
-==================================================
-
-PLAYER COLOR:
-${playerColor}
-
-MOVE NUMBER:
-${moveNumber}
-
-MOVE INDEX:
-${moveIndex}
-
-PLAYER'S ACTUAL MOVE:
-${san}
-
-UCI MOVE:
-${playerMove}
-
-POSITION BEFORE THE MOVE:
-${beforeFen}
-
-POSITION AFTER THE MOVE:
-${afterFen}
-
-==================================================
-CHESS ANALYSIS
-==================================================
-
-The chess engine has already analyzed the position BEFORE the player's move.
-
-The supplied moves are alternatives that were available to the player BEFORE they made their move.
-
-STOCKFISH ANALYSIS:
-${JSON.stringify(topMoves, null, 2)}
-
-MOVE ANALYSIS:
+Move Evaluation:
 ${JSON.stringify(moveAnalysis, null, 2)}
 
-==================================================
-YOUR JOB
-==================================================
+CRITICAL INSTRUCTIONS:
+1. Act like a supportive, natural human coach. NEVER mention Stockfish, engine, FEN, centipawns, MultiPV, depth, PV, or rank numbers.
+2. Use standard SAN notation in spoken text (e.g. Nc3, e4, e5, Nf3).
+3. Always identify the player correctly as ${playerColor} (e.g. "${playerColor === 'WHITE' ? 'White' : 'Black'} played ${san}...").
+4. Provide feedback on the move played (${san}).
+5. If there was a stronger alternative (e.g. ${bestMoveBefore ? bestMoveBefore.san : ''}), explain why naturally.
+6. If mentioning an opponent response (e.g. ${bestResponseAfter ? bestResponseAfter.san : ''}), mention it as what opponent might consider.
+7. Keep response short (3-4 sentences total).
 
-Your job is to coach the player about the move they JUST PLAYED.
+OUTPUT REQUIREMENTS:
+You MUST respond with a valid JSON object only. No markdown around JSON if possible, or clean JSON codeblock.
 
-The player's actual move is:
+JSON Format:
+{
+  "narrative": "Complete full text explanation...",
+  "segments": [
+    {
+      "text": "First sentence identifying player and move feedback...",
+      "move": null
+    },
+    {
+      "text": "Second sentence discussing a specific move like e4...",
+      "move": {
+        "from": "e2",
+        "to": "e4",
+        "san": "e4",
+        "type": "best_move"
+      }
+    },
+    {
+      "text": "Third sentence discussing opponent response like e5...",
+      "move": {
+        "from": "e7",
+        "to": "e5",
+        "san": "e5",
+        "type": "response"
+      }
+    }
+  ]
+}
 
-${san}
-
-You must talk about THIS move.
-
-Do NOT treat the engine's suggested moves as moves that the player played.
-
-Do NOT predict the opponent's next move unless it is necessary to explain the position.
-
-==================================================
-PLAYER IDENTIFICATION
-==================================================
-
-ALWAYS identify the player correctly.
-
-If playerColor is WHITE, start naturally with:
-
-"White played ${san}."
-
-If playerColor is BLACK, start naturally with:
-
-"Black played ${san}."
-
-Never confuse White and Black.
-
-==================================================
-MOVE QUALITY
-==================================================
-
-Use the supplied moveAnalysis to understand the quality of the player's move.
-
-If quality is "best_move":
-- Clearly tell the player that they made an excellent/correct choice.
-- Explain the chess idea behind the move.
-- Be encouraging.
-
-If quality is "strong_move":
-- Tell the player it is a strong/good move.
-- Explain the main idea.
-- If another move was stronger, mention it naturally without making the player feel bad.
-
-If quality is "playable_move":
-- Tell the player that the move is reasonable/playable.
-- Explain what it accomplishes.
-- Briefly mention that there were stronger alternatives if appropriate.
-
-If quality is "not_in_top_5":
-- Do not automatically call it a blunder.
-- Explain that stronger alternatives were available.
-- Explain the practical difference in a constructive way.
-- Only call it a mistake/blunder if the supplied analysis clearly justifies that.
-
-==================================================
-CONVERSATIONAL STYLE
-==================================================
-
-Write like the AI chess coach shown in the ZC-Coach interface.
-
-The response should feel like a conversation.
-
-Be:
-- friendly
-- encouraging
-- natural
-- concise
-- beginner/intermediate friendly
-- conversational
-
-Avoid:
-- robotic engine language
-- technical engine reports
-- excessive chess terminology
-- long variations
-- formal analysis reports
-
-Use natural phrases such as:
-
-"Nice move!"
-"That's a solid choice."
-"Good idea."
-"There's a stronger option here, though."
-"That's still perfectly playable."
-"Here's what I'd keep in mind..."
-"Now think about..."
-"Keep an eye on..."
-
-Do not overuse these phrases.
-
-==================================================
-CHESS NOTATION
-==================================================
-
-Use normal chess notation.
-
-Examples:
-
-b1c3 → Nc3
-e2e4 → e4
-g1f3 → Nf3
-e1g1 → O-O
-d1h5 → Qh5
-
-Do not show UCI notation to the user.
-
-==================================================
-ENGINE INFORMATION
-==================================================
-
-NEVER mention:
-
-- Stockfish
-- engine
-- FEN
-- centipawns
-- evaluation score
-- MultiPV
-- PV
-- depth
-- nodes
-- rank
-- top 5
-
-The player should feel that they are receiving coaching, not reading engine output.
-
-==================================================
-VARIATIONS
-==================================================
-
-Do not dump the entire principal variation.
-
-Only use a supplied alternative move when it helps explain why the player's move was or was not the best choice.
-
-Do not invent moves.
-
-Only discuss chess ideas supported by the supplied analysis.
-
-==================================================
-RESPONSE LENGTH
-==================================================
-
-Keep the response short.
-
-Use approximately 3-5 sentences.
-
-The response should generally follow this conversational structure:
-
-1. Identify who played and what they played.
-2. Give immediate feedback on the move.
-3. Explain the chess idea in simple language.
-4. Mention a stronger alternative only when useful.
-5. Give one short coaching tip.
-
-==================================================
-EXAMPLE
-==================================================
-
-If WHITE played Nc3:
-
-"White played Nc3. That's a natural developing move and it brings a piece toward the center, so it's a perfectly playable choice. There was a stronger way to immediately challenge the center, but you haven't done anything disastrous here. Coaching tip: In the opening, try to develop your pieces while fighting for the center."
-
-If BLACK played e5:
-
-"Black played e5. That's a strong central response because it immediately challenges White's control of the center. It also opens the way for your pieces to develop naturally. Coaching tip: When you can fight for the center while developing, that's usually a good sign."
-
-==================================================
-
-IMPORTANT:
-
-The move being discussed is ALWAYS the player's latest move:
-
-${san}
-
-The player is:
-
-${playerColor}
-
-Do not confuse this with the opponent's next move.
-
-Return ONLY the coaching message.
+Note: For any move object inside segments, 'from' and 'to' MUST be valid board squares (e.g. "e2", "e4", "g1", "f3"). Only include a move object if that specific segment explicitly discusses that specific chess move. Otherwise set move to null.
 `;
 
-            try {
-                const geminiResponse = await ai.models.generateContent({
-                    model: "gemini-3.5-flash",
-                    contents: prompt,
-                });
-
-                const narrative = geminiResponse.text.trim();
-
-                console.log("GEMINI NARRATION:", narrative);
-
-                const audioFileName = `move-${moveIndex}-${Date.now()}.mp3`;
-
-                execFile(
-                    "python",
-                    ["tts.py", narrative, audioFileName],
-                    { cwd: __dirname },
-                    (error, stdout, stderr) => {
-
-                        if (error) {
-                            console.error("TTS error:", error);
-                            console.error("TTS stderr:", stderr);
-
-                            return res.status(500).json({
-                                beforeFen,
-                                afterFen,
-                                playerColor,
-                                playerMove,
-                                topMoves,
-                                moveAnalysis,
-                                narrative,
-                                error: "TTS generation failed"
-                            });
-                        }
-
-                        console.log(stdout);
-
-                        res.json({
-                            moveIndex,
-                            moveNumber,
-
-                            beforeFen,
-                            afterFen,
-
-                            playerColor,
-                            playerMove,
-                            san,
-
-                            topMoves,
-                            moveAnalysis,
-
-                            narrative,
-
-                            audioUrl: `/audio/${audioFileName}`
-                        });
-                    }
-                );
-
-            } catch (error) {
-                console.error("Gemini error:", error);
-
-                res.status(500).json({
-                    beforeFen,
-                    afterFen,
-                    playerColor,
-                    playerMove,
-                    topMoves,
-                    moveAnalysis,
-                    error: "Gemini narration failed"
-                });
+        const geminiResponse = await ai.models.generateContent({
+            model: "gemini-3.5-flash",
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json"
             }
+        });
 
-            stockfish.kill();
+        const parsedJson = parseGeminiJson(geminiResponse.text);
+
+        const segmentsWithAudio = await Promise.all(
+            (parsedJson.segments || []).map(async (seg) => {
+                const audioDataUri = await generateTTSForText(seg.text);
+                return {
+                    text: seg.text,
+                    move: seg.move || null,
+                    audioDataUri: audioDataUri
+                };
+            })
+        );
+
+        res.json({
+            beforeFen,
+            afterFen,
+            playerColor,
+            playerMove,
+            san,
+            bestMoveBefore: bestMoveBefore ? bestMoveBefore.move : null,
+            bestResponseAfter: bestResponseAfter ? bestResponseAfter.move : null,
+            topMovesBefore,
+            topMovesAfter,
+            moveAnalysis,
+            narrative: parsedJson.narrative || geminiResponse.text,
+            segments: segmentsWithAudio
+        });
+
+    } catch (error) {
+        console.error("Analysis route error:", error);
+        res.status(500).json({ error: "Failed to analyze move" });
+    }
+});
+
+/**
+ * POST /api/chat
+ * Handles user follow-up questions about the current position/move.
+ */
+app.post("/api/chat", async (req, res) => {
+    const { question, moveContext, chatHistory } = req.body;
+
+    if (!question) {
+        return res.status(400).json({ error: "question is required" });
+    }
+
+    console.log(`[CHAT] Question: "${question}"`);
+
+    try {
+        const fenToAnalyze = moveContext?.afterFen || moveContext?.beforeFen || "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        
+        let stockfishMoves = [];
+        try {
+            stockfishMoves = await analyzeFenWithStockfish(fenToAnalyze, 15, 5);
+        } catch (sfErr) {
+            console.error("Stockfish error for chat position:", sfErr);
         }
-    });
 
-    stockfish.stderr.on("data", (data) => {
-        console.error("STOCKFISH ERROR:", data.toString());
-    });
+        const prompt = `
+You are a friendly, expert human chess coach in an interactive chat session with a player.
 
-    stockfish.on("error", (error) => {
-        console.error("Failed to start Stockfish:", error);
+Current Game Context:
+- Move Context: ${JSON.stringify(moveContext, null, 2)}
+- Current Position FEN: ${fenToAnalyze}
+- Stockfish Analysis of current position: ${JSON.stringify(stockfishMoves, null, 2)}
 
-        if (!res.headersSent) {
-            res.status(500).json({
-                error: "Failed to start Stockfish"
-            });
-        }
-    });
+Chat History:
+${JSON.stringify(chatHistory || [], null, 2)}
 
-    // Start UCI communication
-    stockfish.stdin.write("uci\n");
+User's Question:
+"${question}"
 
-    // Ask for 5 variations
-    stockfish.stdin.write("setoption name MultiPV value 5\n");
+INSTRUCTIONS:
+1. Answer the player's question directly, accurately, and encouragingly.
+2. Ground your explanation in real chess principles and the supplied position/analysis.
+3. If the user asks "Why not Nc3?", "Why was e4 better?", "What happens if I play d4?", explain clearly using SAN notation.
+4. NEVER mention engine, Stockfish, FEN, centipawns, MultiPV, or robotic terms.
+5. Keep explanation concise (2-4 sentences).
 
-    // Wait until Stockfish is ready
-    stockfish.stdin.write("isready\n");
+OUTPUT REQUIREMENTS:
+Respond ONLY with a valid JSON object:
 
-    // Send the FEN received from the frontend
-    stockfish.stdin.write(`position fen ${beforeFen}\n`);
+{
+  "narrative": "Full answer to question...",
+  "segments": [
+    {
+      "text": "Sentence explaining...",
+      "move": {
+        "from": "e2",
+        "to": "e4",
+        "san": "e4",
+        "type": "discussed_move"
+      }
+    }
+  ]
+}
 
-    // Analyze to depth 15
-    stockfish.stdin.write("go depth 15\n");
+If a segment discusses a specific move, provide its 'from' and 'to' squares (e.g. e2 -> e4). Otherwise set move to null.
+`;
+
+        const geminiResponse = await ai.models.generateContent({
+            model: "gemini-3.5-flash",
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json"
+            }
+        });
+
+        const parsedJson = parseGeminiJson(geminiResponse.text);
+
+        const segmentsWithAudio = await Promise.all(
+            (parsedJson.segments || []).map(async (seg) => {
+                const audioDataUri = await generateTTSForText(seg.text);
+                return {
+                    text: seg.text,
+                    move: seg.move || null,
+                    audioDataUri: audioDataUri
+                };
+            })
+        );
+
+        res.json({
+            narrative: parsedJson.narrative || geminiResponse.text,
+            segments: segmentsWithAudio
+        });
+
+    } catch (error) {
+        console.error("Chat route error:", error);
+        res.status(500).json({ error: "Failed to answer question" });
+    }
 });
 
 app.get("/api/test-gemini", async (req, res) => {
@@ -501,12 +492,13 @@ app.get("/api/test-gemini", async (req, res) => {
         });
     } catch (error) {
         console.error("Gemini error:", error);
-
-        res.status(500).json({
-            error: error.message,
-        });
+        res.status(500).json({ error: error.message });
     }
 });
-app.listen(PORT, () => {
+
+const server = app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
 });
+
+// Keep Node event loop active continuously
+setInterval(() => {}, 100000);

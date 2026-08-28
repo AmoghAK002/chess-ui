@@ -15,6 +15,27 @@ type PendingMove = {
   playerColor: "WHITE" | "BLACK";
 };
 
+type MoveHighlight = {
+  from: Square;
+  to: Square;
+  san?: string;
+  type?: string;
+};
+
+type Segment = {
+  text: string;
+  move?: MoveHighlight | null;
+  audioDataUri?: string | null;
+};
+
+type ChatMessage = {
+  id: string;
+  role: "user" | "model";
+  text: string;
+  moveContext?: PendingMove;
+  segments?: Segment[];
+};
+
 type LastMove = {
   from: Square;
   to: Square;
@@ -46,11 +67,10 @@ const LEGAL_CAPTURE_RING =
   "radial-gradient(circle, transparent 60%, rgba(0, 0, 0, 0.18) 62%, rgba(0, 0, 0, 0.18) 72%, transparent 74%)";
 
 function App() {
-  // The single source of truth for game state. Never reconstructed from FEN
-  // mid-game, so chess.js's internal move history stays intact.
+  // Single source of truth for game state
   const gameRef = useRef(new Chess());
 
-  // Lightweight state purely to trigger re-renders when gameRef mutates.
+  // State to trigger re-renders when gameRef mutates
   const [fen, setFen] = useState<string>(gameRef.current.fen());
 
   const [lastMove, setLastMove] = useState<LastMove | null>(null);
@@ -58,10 +78,93 @@ function App() {
   const [legalTargets, setLegalTargets] = useState<Square[]>([]);
   const [showGameOverModal, setShowGameOverModal] = useState(false);
 
-  const [aiNarrative, setAiNarrative] = useState<string>("");
-  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  // AI Chess Coach & Chat state
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [pendingMove, setPendingMove] = useState<PendingMove | null>(null);
   const [isExplaining, setIsExplaining] = useState(false);
+  const [userQuestion, setUserQuestion] = useState("");
+  const [coachHighlight, setCoachHighlight] = useState<MoveHighlight | null>(null);
+
+  // Audio queue & race condition management
+  const requestIdRef = useRef<number>(0);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const chatBottomRef = useRef<HTMLDivElement | null>(null);
+
+  // Scroll chat to bottom on new message
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages, isExplaining]);
+
+  // Stops any playing audio and clears coach move highlights
+  const stopAudioAndHighlight = useCallback(() => {
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current = null;
+    }
+    setCoachHighlight(null);
+  }, []);
+
+  // Sequentially plays segment audio and highlights moves during corresponding spoken segments
+  const playSegments = useCallback(
+    async (segments: Segment[], currentRequestId: number) => {
+      stopAudioAndHighlight();
+
+      for (let i = 0; i < segments.length; i++) {
+        if (requestIdRef.current !== currentRequestId) {
+          setCoachHighlight(null);
+          return;
+        }
+
+        const seg = segments[i];
+
+        if (seg.move && seg.move.from && seg.move.to) {
+          setCoachHighlight(seg.move);
+        } else {
+          setCoachHighlight(null);
+        }
+
+        if (seg.audioDataUri) {
+          await new Promise<void>((resolve) => {
+            const audio = new Audio(seg.audioDataUri!);
+            currentAudioRef.current = audio;
+
+            const cleanup = () => {
+              audio.onended = null;
+              audio.onerror = null;
+              if (currentAudioRef.current === audio) {
+                currentAudioRef.current = null;
+              }
+            };
+
+            audio.onended = () => {
+              cleanup();
+              resolve();
+            };
+
+            audio.onerror = (err) => {
+              console.error("Segment audio error:", err);
+              cleanup();
+              resolve();
+            };
+
+            audio.play().catch((err) => {
+              console.error("Audio playback error:", err);
+              cleanup();
+              resolve();
+            });
+          });
+        } else {
+          const delay = Math.max(1500, (seg.text?.length || 20) * 60);
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      }
+
+      if (requestIdRef.current === currentRequestId) {
+        setCoachHighlight(null);
+      }
+    },
+    [stopAudioAndHighlight],
+  );
 
   const clearSelection = useCallback(() => {
     setSelectedSquare(null);
@@ -72,7 +175,6 @@ function App() {
     (from: string, to: string, promotion: string = "q"): boolean => {
       try {
         const beforeFen = gameRef.current.fen();
-
         const playerColor = gameRef.current.turn() === "w" ? "WHITE" : "BLACK";
 
         const result = gameRef.current.move({
@@ -84,38 +186,12 @@ function App() {
         if (result) {
           const afterFen = gameRef.current.fen();
 
-          // Global half-move index:
-          // 0 = White's first move
-          // 1 = Black's first move
-          // 2 = White's second move
-          // 3 = Black's second move...
           const moveIndex = gameRef.current.history().length - 1;
-
-          // Chess move number:
-          // White Nc3  -> 1
-          // Black e5   -> 1
-          // White Nf3  -> 2
           const moveNumber = Math.floor(moveIndex / 2) + 1;
-
-          // Human-readable chess notation
           const san = result.san;
-
-          // UCI-style notation
           const uci = result.from + result.to;
 
-          const moveContext = {
-            moveIndex,
-            moveNumber,
-            playerColor,
-            san,
-            uci,
-            beforeFen,
-            afterFen,
-          };
-
-          console.log("MOVE CONTEXT:", moveContext);
-
-          setPendingMove({
+          const newMoveContext: PendingMove = {
             moveIndex,
             moveNumber,
             beforeFen,
@@ -123,86 +199,164 @@ function App() {
             playerMove: uci,
             san,
             playerColor,
-          });
+          };
 
+          // Cancel any active audio/highlights when a new move is made
+          requestIdRef.current++;
+          stopAudioAndHighlight();
+
+          setPendingMove(newMoveContext);
           setLastMove({
             from: result.from,
             to: result.to,
           });
-
           setFen(afterFen);
-
-          setIsAnalyzing(true);
-
-          /* fetch("http://localhost:5000/api/analyze", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              moveIndex,
-              moveNumber,
-
-              beforeFen,
-              afterFen,
-
-              playerMove: uci,
-              san,
-
-              playerColor,
-            }),
-          })
-            .then((response) => {
-              if (!response.ok) {
-                throw new Error(`API error: ${response.status}`);
-              }
-
-              return response.json();
-            })
-            .then((data) => {
-              console.log("Stockfish analysis:", data);
-
-              if (data.narrative) {
-                setAiNarrative(data.narrative);
-              }
-
-              // Play the narration generated specifically for this move
-              if (data.audioUrl) {
-                const audio = new Audio(
-                  `http://localhost:5000${data.audioUrl}?t=${Date.now()}`,
-                );
-
-                audio.play().catch((error) => {
-                  console.error("Audio playback failed:", error);
-                });
-              }
-            })
-            .catch((error) => {
-              console.error("Stockfish API error:", error);
-              setAiNarrative("Sorry, I couldn't analyze this move.");
-            })
-            .finally(() => {
-              setIsAnalyzing(false);
-            });*/
 
           return true;
         }
       } catch {
-        // Illegal move — ignore, board will snap back.
+        // Illegal move
       }
 
       return false;
     },
-    [],
+    [stopAudioAndHighlight],
   );
 
-  // Rebuilds the game up to (but not including) the given global half-move
-  // index by replaying moves from scratch. This is used both for a plain
-  // "undo last move" action and for jumping back to any specific move in
-  // the history panel — both are just special cases of "keep the first N
-  // half-moves".
+  const explainMove = useCallback(async () => {
+    if (!pendingMove) return;
+
+    requestIdRef.current++;
+    const currentRequestId = requestIdRef.current;
+    stopAudioAndHighlight();
+
+    setIsExplaining(true);
+
+    try {
+      const response = await fetch("http://localhost:5000/api/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(pendingMove),
+      });
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (requestIdRef.current !== currentRequestId) return;
+
+      const coachMsg: ChatMessage = {
+        id: `msg-${Date.now()}`,
+        role: "model",
+        text: data.narrative || "Here is your move analysis.",
+        moveContext: pendingMove,
+        segments: data.segments || [],
+      };
+
+      setChatMessages((prev) => [...prev, coachMsg]);
+
+      if (data.segments && data.segments.length > 0) {
+        playSegments(data.segments, currentRequestId);
+      }
+    } catch (error) {
+      console.error("Explain move error:", error);
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `msg-err-${Date.now()}`,
+          role: "model",
+          text: "Sorry, I couldn't analyze this move.",
+        },
+      ]);
+    } finally {
+      setIsExplaining(false);
+    }
+  }, [pendingMove, playSegments, stopAudioAndHighlight]);
+
+  const handleAskQuestion = useCallback(
+    async (questionText?: string) => {
+      const q = (questionText || userQuestion).trim();
+      if (!q || isExplaining) return;
+
+      setUserQuestion("");
+
+      requestIdRef.current++;
+      const currentRequestId = requestIdRef.current;
+      stopAudioAndHighlight();
+
+      const userMsg: ChatMessage = {
+        id: `msg-user-${Date.now()}`,
+        role: "user",
+        text: q,
+      };
+
+      setChatMessages((prev) => [...prev, userMsg]);
+      setIsExplaining(true);
+
+      try {
+        const historyPayload = chatMessages.map((m) => ({
+          role: m.role,
+          text: m.text,
+        }));
+
+        const response = await fetch("http://localhost:5000/api/chat", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            question: q,
+            moveContext: pendingMove,
+            chatHistory: historyPayload,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        if (requestIdRef.current !== currentRequestId) return;
+
+        const coachMsg: ChatMessage = {
+          id: `msg-coach-${Date.now()}`,
+          role: "model",
+          text: data.narrative,
+          segments: data.segments || [],
+        };
+
+        setChatMessages((prev) => [...prev, coachMsg]);
+
+        if (data.segments && data.segments.length > 0) {
+          playSegments(data.segments, currentRequestId);
+        }
+      } catch (err) {
+        console.error("Chat question error:", err);
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            id: `msg-err-${Date.now()}`,
+            role: "model",
+            text: "Sorry, I ran into an error answering your question.",
+          },
+        ]);
+      } finally {
+        setIsExplaining(false);
+      }
+    },
+    [userQuestion, isExplaining, chatMessages, pendingMove, playSegments, stopAudioAndHighlight],
+  );
+
   const rewindToIndex = useCallback(
     (index: number) => {
+      requestIdRef.current++;
+      stopAudioAndHighlight();
+
       const verboseHistory = gameRef.current.history({ verbose: true });
       const movesToKeep = verboseHistory.slice(0, Math.max(index, 0));
 
@@ -221,14 +375,13 @@ function App() {
       const last = movesToKeep[movesToKeep.length - 1] as Move | undefined;
       setLastMove(last ? { from: last.from, to: last.to } : null);
 
+      setPendingMove(null);
       clearSelection();
       setShowGameOverModal(false);
     },
-    [clearSelection],
+    [clearSelection, stopAudioAndHighlight],
   );
 
-  // Undoes a specific half-move (identified by its global index in the
-  // history) and everything played after it.
   const undoMoveAtIndex = useCallback(
     (index: number) => {
       rewindToIndex(index);
@@ -236,7 +389,6 @@ function App() {
     [rewindToIndex],
   );
 
-  // Quick "undo last move" action.
   const undoLastMove = useCallback(() => {
     const totalMoves = gameRef.current.history().length;
     if (totalMoves === 0) return;
@@ -257,14 +409,12 @@ function App() {
       const clickedSquare = square as Square;
       const game = gameRef.current;
 
-      // A destination square was tapped while a piece is already selected.
       if (selectedSquare && legalTargets.includes(clickedSquare)) {
         const moved = makeMove(selectedSquare, clickedSquare, "q");
         clearSelection();
         if (moved) return;
       }
 
-      // Tapping the currently selected square again deselects it.
       if (selectedSquare === clickedSquare) {
         clearSelection();
         return;
@@ -283,57 +433,19 @@ function App() {
     },
     [selectedSquare, legalTargets, makeMove, clearSelection],
   );
-  const explainMove = useCallback(async () => {
-    if (!pendingMove) return;
-
-    setIsExplaining(true);
-    setAiNarrative("");
-
-    try {
-      const response = await fetch("http://localhost:5000/api/analyze", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(pendingMove),
-      });
-
-      if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-
-      console.log("Coach analysis:", data);
-
-      if (data.narrative) {
-        setAiNarrative(data.narrative);
-      }
-
-      if (data.audioUrl) {
-        const audio = new Audio(
-          `http://localhost:5000${data.audioUrl}?t=${Date.now()}`,
-        );
-
-        audio.play().catch((error) => {
-          console.error("Audio playback failed:", error);
-        });
-      }
-    } catch (error) {
-      console.error("Explain move error:", error);
-      setAiNarrative("Sorry, I couldn't analyze this move.");
-    } finally {
-      setIsExplaining(false);
-    }
-  }, [pendingMove]);
 
   const resetGame = useCallback(() => {
+    requestIdRef.current++;
+    stopAudioAndHighlight();
+
     gameRef.current = new Chess();
     setFen(gameRef.current.fen());
     setLastMove(null);
+    setPendingMove(null);
+    setChatMessages([]);
     clearSelection();
     setShowGameOverModal(false);
-  }, [clearSelection]);
+  }, [clearSelection, stopAudioAndHighlight]);
 
   const getGameStatus = useCallback(() => {
     const game = gameRef.current;
@@ -341,7 +453,6 @@ function App() {
     if (game.isDraw()) return "Draw";
     if (game.isCheck()) return "Check";
     return "In Progress";
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fen]);
 
   const isGameOver = gameRef.current.isGameOver();
@@ -372,19 +483,14 @@ function App() {
     }
 
     return { title: "Game Over", subtitle: "" };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fen, isGameOver]);
 
   useEffect(() => {
     if (isGameOver) {
       setShowGameOverModal(true);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isGameOver]);
 
-  // Single pass over the verbose history: builds move pairs (for display +
-  // per-move undo indices) and captured-piece lists together, so we don't
-  // walk the history array three separate times per render.
   const { moveHistory, capturedByWhite, capturedByBlack } = useMemo(() => {
     const verboseHistory = gameRef.current.history({ verbose: true });
     const pairs: MovePair[] = [];
@@ -417,9 +523,9 @@ function App() {
       capturedByWhite: byWhite,
       capturedByBlack: byBlack,
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fen]);
 
+  // Combine square styles: lastMove (yellow) + selected + legal + coachHighlight (blue)
   const squareStyles = useMemo(() => {
     const styles: Record<string, CSSProperties> = {};
     const game = gameRef.current;
@@ -447,9 +553,40 @@ function App() {
       };
     }
 
+    // Coach explanation highlighting layer
+    if (coachHighlight && coachHighlight.from && coachHighlight.to) {
+      const coachSquareStyle: CSSProperties = {
+        backgroundColor: "rgba(59, 130, 246, 0.45)",
+        boxShadow: "inset 0 0 0 3px #2563eb",
+        borderRadius: "4px",
+      };
+
+      styles[coachHighlight.from] = {
+        ...styles[coachHighlight.from],
+        ...coachSquareStyle,
+      };
+      styles[coachHighlight.to] = {
+        ...styles[coachHighlight.to],
+        ...coachSquareStyle,
+      };
+    }
+
     return styles;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fen, lastMove, selectedSquare, legalTargets]);
+  }, [fen, lastMove, selectedSquare, legalTargets, coachHighlight]);
+
+  // Coach explanation arrows layer
+  const customArrows = useMemo(() => {
+    if (coachHighlight && coachHighlight.from && coachHighlight.to) {
+      return [
+        {
+          startSquare: coachHighlight.from,
+          endSquare: coachHighlight.to,
+          color: "rgb(37, 99, 235)",
+        },
+      ];
+    }
+    return [];
+  }, [coachHighlight]);
 
   const chessboardOptions = useMemo(
     () => ({
@@ -458,10 +595,11 @@ function App() {
       onPieceDrop,
       onSquareClick,
       squareStyles,
+      arrows: customArrows,
       darkSquareStyle: { backgroundColor: "#769656" },
       lightSquareStyle: { backgroundColor: "#eeeed2" },
     }),
-    [fen, onPieceDrop, onSquareClick, squareStyles],
+    [fen, onPieceDrop, onSquareClick, squareStyles, customArrows],
   );
 
   const game = gameRef.current;
@@ -481,214 +619,247 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-gray-900 flex items-center justify-center p-4 sm:p-8">
-      <div className="w-full max-w-6xl bg-white rounded-3xl shadow-2xl p-4 sm:p-8">
+      <div className="w-full max-w-7xl bg-white rounded-3xl shadow-2xl p-4 sm:p-8">
         <h1 className="text-3xl sm:text-4xl font-bold text-center mb-2">
-          ♟️ Chess UI
+          ♟️ AI Chess Coach
         </h1>
 
         <p className="text-center text-gray-500 mb-6 sm:mb-8 text-sm sm:text-base">
-          Built using React, TypeScript, chess.js &amp; react-chessboard
+          Interactive Coaching with Stockfish Analysis, Gemini Voice &amp; Board Highlighting
         </p>
 
-        <div className="flex flex-col lg:flex-row justify-center items-start gap-6 lg:gap-10">
-          {/* Board column - fully responsive, no fixed pixel width */}
-          <div className="w-full max-w-[95vw] sm:max-w-[450px] lg:max-w-[560px] mx-auto">
-            <Chessboard options={chessboardOptions} />
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-start">
+          {/* Left Column: Chess Board */}
+          <div className="lg:col-span-6 flex flex-col items-center">
+            <div className="w-full max-w-[480px] lg:max-w-[540px]">
+              <Chessboard options={chessboardOptions} />
+            </div>
+
+            {/* Quick Game Action Controls */}
+            <div className="w-full max-w-[480px] lg:max-w-[540px] mt-4 flex gap-3">
+              <button
+                onClick={undoLastMove}
+                disabled={totalMoves === 0}
+                className="flex-1 bg-gray-100 hover:bg-gray-200 active:bg-gray-300 disabled:opacity-40 disabled:cursor-not-allowed text-gray-700 py-2.5 rounded-xl transition font-semibold text-sm flex items-center justify-center gap-1.5"
+              >
+                ↺ Undo Move
+              </button>
+              <button
+                onClick={resetGame}
+                className="flex-1 bg-slate-800 hover:bg-slate-900 active:bg-black text-white py-2.5 rounded-xl transition font-semibold text-sm"
+              >
+                Reset Game
+              </button>
+            </div>
           </div>
 
-          {/* Right panel */}
-          <div className="w-full lg:w-96 flex flex-col gap-4">
-            {/* AI Coach Card */}
-            <section className="bg-blue-50 border border-blue-200 rounded-2xl p-5 shadow-sm">
-              <h2 className="text-lg font-semibold mb-3 text-blue-900">
-                🤖 AI Chess Coach
-              </h2>
-
-              {isExplaining ? (
-                <p className="text-sm text-blue-700">Analyzing your move...</p>
-              ) : aiNarrative ? (
-                <div className="text-sm text-gray-700 whitespace-pre-line leading-relaxed">
-                  {aiNarrative}
+          {/* Right Column: AI Coach Chat & Game Status */}
+          <div className="lg:col-span-6 flex flex-col gap-6 h-full">
+            {/* AI Coach Chat Card */}
+            <section className="bg-slate-900 text-white border border-slate-700 rounded-2xl p-5 shadow-lg flex flex-col h-[460px]">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center font-bold text-sm">
+                    🤖
+                  </div>
+                  <div>
+                    <h2 className="text-base font-semibold">AI Chess Coach</h2>
+                    <p className="text-xs text-slate-400">
+                      {coachHighlight ? "🔊 Speaking & Highlighting..." : "Ready to explain"}
+                    </p>
+                  </div>
                 </div>
-              ) : pendingMove ? (
-                <>
-                  <p className="text-sm text-gray-500 mb-3">
-                    {pendingMove.playerColor} played{" "}
-                    <strong>{pendingMove.san}</strong>.
-                  </p>
 
+                {pendingMove && (
                   <button
                     onClick={explainMove}
-                    className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl font-semibold transition"
+                    disabled={isExplaining}
+                    className="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 disabled:opacity-50 text-white text-xs px-3.5 py-1.5 rounded-lg font-semibold transition flex items-center gap-1.5 shadow"
                   >
-                    🧠 Explain Move
+                    {isExplaining ? "Analyzing..." : `🧠 Explain ${pendingMove.san}`}
                   </button>
-                </>
-              ) : (
-                <p className="text-sm text-gray-400">
-                  Make a move to get AI coaching.
-                </p>
-              )}
-            </section>
-            {/* Game Information Card */}
-            <section className="bg-gray-50 border border-gray-200 rounded-2xl p-5 shadow-sm">
-              <h2 className="text-lg font-semibold mb-4 text-gray-800 tracking-tight">
-                Game Information
-              </h2>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-gray-400 mb-1">
-                    Current Turn
-                  </p>
-                  <p className="text-base font-bold text-gray-800">
-                    {game.turn() === "w" ? "♔ White" : "♚ Black"}
-                  </p>
-                </div>
-
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-gray-400 mb-1">
-                    Game Status
-                  </p>
-                  <p className={`text-base font-bold ${statusColorClass}`}>
-                    {getGameStatus()}
-                  </p>
-                </div>
-              </div>
-
-              <div className="mt-4">
-                <p className="text-xs uppercase tracking-wide text-gray-400 mb-1">
-                  Current Position (FEN)
-                </p>
-                <p className="text-xs break-all bg-white rounded-lg p-2 border border-gray-200 font-mono text-gray-600">
-                  {fen}
-                </p>
-              </div>
-
-              <div className="mt-4 space-y-3">
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-gray-400 mb-1">
-                    Captured by White
-                  </p>
-                  <div className="min-h-[1.75rem] text-2xl leading-none flex flex-wrap gap-1">
-                    {capturedByWhite.length > 0 ? (
-                      capturedByWhite.map((piece, idx) => (
-                        <span key={`w-cap-${idx}`}>
-                          {UNICODE_PIECES.b[piece]}
-                        </span>
-                      ))
-                    ) : (
-                      <span className="text-sm text-gray-300">None yet</span>
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-gray-400 mb-1">
-                    Captured by Black
-                  </p>
-                  <div className="min-h-[1.75rem] text-2xl leading-none flex flex-wrap gap-1">
-                    {capturedByBlack.length > 0 ? (
-                      capturedByBlack.map((piece, idx) => (
-                        <span key={`b-cap-${idx}`}>
-                          {UNICODE_PIECES.w[piece]}
-                        </span>
-                      ))
-                    ) : (
-                      <span className="text-sm text-gray-300">None yet</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-5 flex gap-3">
-                <button
-                  onClick={undoLastMove}
-                  disabled={totalMoves === 0}
-                  className="flex-1 bg-gray-100 hover:bg-gray-200 active:bg-gray-300 disabled:opacity-40 disabled:cursor-not-allowed text-gray-700 py-2.5 rounded-xl transition font-semibold text-sm"
-                >
-                  ↺ Undo Move
-                </button>
-                <button
-                  onClick={resetGame}
-                  className="flex-1 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white py-2.5 rounded-xl transition font-semibold text-sm"
-                >
-                  Reset Game
-                </button>
-              </div>
-            </section>
-
-            {/* Move History Card */}
-            <section className="bg-gray-50 border border-gray-200 rounded-2xl p-5 shadow-sm flex-1 min-h-0">
-              <h2 className="text-lg font-semibold mb-4 text-gray-800 tracking-tight">
-                Move History
-              </h2>
-
-              <div className="max-h-72 overflow-y-auto rounded-lg border border-gray-200 bg-white">
-                {moveHistory.length > 0 ? (
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-gray-200 text-xs uppercase tracking-wide text-gray-400">
-                        <th className="py-2 pl-3 pr-2 text-left font-medium w-10">
-                          #
-                        </th>
-                        <th className="py-2 px-2 text-left font-medium">
-                          White
-                        </th>
-                        <th className="py-2 px-2 text-left font-medium">
-                          Black
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {moveHistory.map((pair) => (
-                        <tr
-                          key={pair.number}
-                          className="border-b border-gray-100 last:border-b-0 even:bg-gray-50 group"
-                        >
-                          <td className="py-1.5 pl-3 pr-2 text-gray-400 font-mono">
-                            {pair.number}.
-                          </td>
-                          <td className="py-1.5 px-2 font-mono text-gray-800">
-                            <div className="flex items-center gap-1.5">
-                              <span>{pair.white}</span>
-                              <button
-                                onClick={() => undoMoveAtIndex(pair.whiteIndex)}
-                                title={`Undo ${pair.white}`}
-                                aria-label={`Undo move ${pair.white}`}
-                                className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-xs text-gray-400 hover:text-red-500 transition"
-                              >
-                                ↺
-                              </button>
-                            </div>
-                          </td>
-                          <td className="py-1.5 px-2 font-mono text-gray-800">
-                            {pair.black !== undefined &&
-                              pair.blackIndex !== undefined && (
-                                <div className="flex items-center gap-1.5">
-                                  <span>{pair.black}</span>
-                                  <button
-                                    onClick={() =>
-                                      undoMoveAtIndex(pair.blackIndex as number)
-                                    }
-                                    title={`Undo ${pair.black}`}
-                                    aria-label={`Undo move ${pair.black}`}
-                                    className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-xs text-gray-400 hover:text-red-500 transition"
-                                  >
-                                    ↺
-                                  </button>
-                                </div>
-                              )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <p className="text-sm text-gray-300 p-3">No moves yet</p>
                 )}
               </div>
+
+              {/* Chat Message Scroll Area */}
+              <div className="flex-1 overflow-y-auto my-3 pr-2 space-y-3 font-sans">
+                {chatMessages.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-center text-slate-400 p-4">
+                    <p className="text-sm font-medium mb-1">Make a move to start coaching</p>
+                    <p className="text-xs text-slate-500 max-w-xs">
+                      Click &quot;Explain Move&quot; after making your move, or ask questions anytime!
+                    </p>
+                  </div>
+                ) : (
+                  chatMessages.map((msg) => (
+                    <div
+                      key={msg.id}
+                      className={`flex flex-col ${
+                        msg.role === "user" ? "items-end" : "items-start"
+                      }`}
+                    >
+                      <div
+                        className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
+                          msg.role === "user"
+                            ? "bg-blue-600 text-white rounded-br-none"
+                            : "bg-slate-800 text-slate-100 border border-slate-700 rounded-bl-none shadow-sm"
+                        }`}
+                      >
+                        {msg.text}
+                      </div>
+
+                      {msg.moveContext && (
+                        <span className="text-[11px] text-slate-400 mt-1 px-1">
+                          Move #{msg.moveContext.moveNumber} • {msg.moveContext.playerColor} played {msg.moveContext.san}
+                        </span>
+                      )}
+                    </div>
+                  ))
+                )}
+
+                {isExplaining && (
+                  <div className="flex items-center gap-2 text-xs text-blue-400 py-1">
+                    <div className="w-2 h-2 rounded-full bg-blue-400 animate-ping" />
+                    Coach is thinking...
+                  </div>
+                )}
+                <div ref={chatBottomRef} />
+              </div>
+
+              {/* Quick Suggestion Chips */}
+              <div className="flex flex-wrap gap-1.5 mb-2 pt-2 border-t border-slate-800">
+                {[
+                  pendingMove ? `Why not ${pendingMove.san}?` : "Why not Nc3?",
+                  "Why was e4 better?",
+                  "What happens if I play d4?",
+                  "What should I play here?",
+                ].map((chip, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => handleAskQuestion(chip)}
+                    disabled={isExplaining}
+                    className="text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white px-2.5 py-1 rounded-md border border-slate-700 transition"
+                  >
+                    {chip}
+                  </button>
+                ))}
+              </div>
+
+              {/* Chat Question Input */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleAskQuestion();
+                }}
+                className="flex gap-2"
+              >
+                <input
+                  type="text"
+                  value={userQuestion}
+                  onChange={(e) => setUserQuestion(e.target.value)}
+                  placeholder="Ask your coach anything (e.g. Why not Nc3?)..."
+                  disabled={isExplaining}
+                  className="flex-1 bg-slate-800 border border-slate-700 text-white placeholder-slate-400 text-xs sm:text-sm rounded-xl px-3.5 py-2.5 focus:outline-none focus:border-blue-500 transition"
+                />
+                <button
+                  type="submit"
+                  disabled={!userQuestion.trim() || isExplaining}
+                  className="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 disabled:opacity-40 text-white text-xs px-4 py-2.5 rounded-xl font-semibold transition"
+                >
+                  Send
+                </button>
+              </form>
             </section>
+
+            {/* Game Info & History Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Status & Captured */}
+              <section className="bg-gray-50 border border-gray-200 rounded-2xl p-4 shadow-sm text-xs">
+                <h3 className="font-semibold text-gray-800 mb-2 text-sm">Game Status</h3>
+                <div className="flex justify-between items-center mb-3">
+                  <span className="text-gray-500">Turn:</span>
+                  <span className="font-bold text-gray-800">
+                    {game.turn() === "w" ? "♔ White" : "♚ Black"}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center mb-3">
+                  <span className="text-gray-500">Status:</span>
+                  <span className={`font-bold ${statusColorClass}`}>{getGameStatus()}</span>
+                </div>
+
+                <div className="border-t border-gray-200 pt-2 space-y-2">
+                  <div>
+                    <span className="text-gray-400 block mb-0.5">Captured by White:</span>
+                    <div className="min-h-[1.25rem] text-lg flex flex-wrap gap-0.5">
+                      {capturedByWhite.length > 0 ? (
+                        capturedByWhite.map((p, i) => (
+                          <span key={`w-${i}`}>{UNICODE_PIECES.b[p]}</span>
+                        ))
+                      ) : (
+                        <span className="text-gray-300 italic">None</span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block mb-0.5">Captured by Black:</span>
+                    <div className="min-h-[1.25rem] text-lg flex flex-wrap gap-0.5">
+                      {capturedByBlack.length > 0 ? (
+                        capturedByBlack.map((p, i) => (
+                          <span key={`b-${i}`}>{UNICODE_PIECES.w[p]}</span>
+                        ))
+                      ) : (
+                        <span className="text-gray-300 italic">None</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              {/* Move History */}
+              <section className="bg-gray-50 border border-gray-200 rounded-2xl p-4 shadow-sm text-xs">
+                <h3 className="font-semibold text-gray-800 mb-2 text-sm">Move History</h3>
+                <div className="max-h-36 overflow-y-auto rounded-lg border border-gray-200 bg-white">
+                  {moveHistory.length > 0 ? (
+                    <table className="w-full text-left font-mono">
+                      <thead>
+                        <tr className="border-b text-[10px] text-gray-400 uppercase">
+                          <th className="py-1 px-2">#</th>
+                          <th className="py-1 px-1">White</th>
+                          <th className="py-1 px-1">Black</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {moveHistory.map((pair) => (
+                          <tr key={pair.number} className="border-b last:border-b-0 even:bg-gray-50">
+                            <td className="py-1 px-2 text-gray-400">{pair.number}.</td>
+                            <td className="py-1 px-1 text-gray-800">
+                              <span
+                                className="cursor-pointer hover:text-blue-600"
+                                onClick={() => undoMoveAtIndex(pair.whiteIndex)}
+                              >
+                                {pair.white}
+                              </span>
+                            </td>
+                            <td className="py-1 px-1 text-gray-800">
+                              {pair.black !== undefined && (
+                                <span
+                                  className="cursor-pointer hover:text-blue-600"
+                                  onClick={() => undoMoveAtIndex(pair.blackIndex as number)}
+                                >
+                                  {pair.black}
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="text-gray-300 p-2 italic">No moves yet</p>
+                  )}
+                </div>
+              </section>
+            </div>
           </div>
         </div>
       </div>
@@ -697,9 +868,7 @@ function App() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl p-8 text-center">
             <p className="text-3xl font-bold mb-2">{gameOverInfo.title}</p>
-            <p className="text-lg text-gray-600 mb-6">
-              {gameOverInfo.subtitle}
-            </p>
+            <p className="text-lg text-gray-600 mb-6">{gameOverInfo.subtitle}</p>
 
             <div className="flex flex-col sm:flex-row gap-3">
               <button
