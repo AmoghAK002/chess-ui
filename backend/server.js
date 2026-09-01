@@ -238,7 +238,15 @@ app.post("/api/analyze", async (req, res) => {
         });
     }
 
-    console.log(`[ANALYZE] Move #${moveNumber} (${playerColor}): SAN=${san}, UCI=${playerMove}`);
+    console.log("\n========== MOVE CONTEXT ==========");
+    console.log("Move Index:", moveIndex);
+    console.log("Move Number:", moveNumber);
+    console.log("Player Color:", playerColor);
+    console.log("SAN:", san);
+    console.log("UCI:", playerMove);
+    console.log("Before FEN:", beforeFen);
+    console.log("After FEN:", afterFen);
+    console.log("==================================\n");
 
     try {
         const [topMovesBefore, topMovesAfter] = await Promise.all([
@@ -251,6 +259,16 @@ app.post("/api/analyze", async (req, res) => {
                 return [];
             })
         ]);
+
+        console.log("\n========== STOCKFISH RESULTS ==========");
+
+        console.log("\n--- BEFORE MOVE ---");
+        console.table(topMovesBefore);
+
+        console.log("\n--- AFTER MOVE ---");
+        console.table(topMovesAfter);
+
+        console.log("=======================================\n");
 
         const playerMoveResult = topMovesBefore.find(m => m.move === playerMove);
         const bestMoveBefore = topMovesBefore.length > 0 ? topMovesBefore[0] : null;
@@ -276,6 +294,10 @@ app.post("/api/analyze", async (req, res) => {
             bestResponseAfterUci: bestResponseAfter ? bestResponseAfter.move : null,
             quality: moveQuality
         };
+
+        console.log("\n========== PLAYER MOVE ANALYSIS ==========");
+        console.log(JSON.stringify(moveAnalysis, null, 2));
+        console.log("==========================================\n");
 
         const prompt = `
 You are a friendly, expert human chess coach sitting next to the player in a live game.
@@ -351,6 +373,15 @@ Note: For any move object inside segments, 'from' and 'to' MUST be valid board s
 
         const parsedJson = parseGeminiJson(geminiResponse.text);
 
+        console.log("\n========== GEMINI COACH RESPONSE ==========");
+        console.log("Narrative:");
+        console.log(parsedJson.narrative);
+
+        console.log("\nSegments:");
+        console.log(JSON.stringify(parsedJson.segments, null, 2));
+
+        console.log("============================================\n");
+
         const segmentsWithAudio = await Promise.all(
             (parsedJson.segments || []).map(async (seg) => {
                 const audioDataUri = await generateTTSForText(seg.text);
@@ -361,6 +392,30 @@ Note: For any move object inside segments, 'from' and 'to' MUST be valid board s
                 };
             })
         );
+
+        console.log("\n========== TTS RESULTS ==========");
+        console.log("Total segments:", segmentsWithAudio.length);
+
+        segmentsWithAudio.forEach((segment, index) => {
+            console.log(
+                `Segment ${index + 1}:`,
+                segment.audioDataUri ? "AUDIO GENERATED ✅" : "NO AUDIO ❌"
+            );
+
+            console.log("Text:", segment.text);
+
+            if (segment.move) {
+                console.log(
+                    "Move:",
+                    `${segment.move.from} → ${segment.move.to}`,
+                    `(${segment.move.san || "no SAN"})`
+                );
+            } else {
+                console.log("Move: None");
+            }
+        });
+
+        console.log("================================\n");
 
         res.json({
             beforeFen,
@@ -398,7 +453,7 @@ app.post("/api/chat", async (req, res) => {
 
     try {
         const fenToAnalyze = moveContext?.afterFen || moveContext?.beforeFen || "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-        
+
         let stockfishMoves = [];
         try {
             stockfishMoves = await analyzeFenWithStockfish(fenToAnalyze, 15, 5);
@@ -501,4 +556,4 @@ const server = app.listen(PORT, () => {
 });
 
 // Keep Node event loop active continuously
-setInterval(() => {}, 100000);
+setInterval(() => { }, 100000);
