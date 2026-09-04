@@ -444,6 +444,7 @@ function App() {
           },
           body: JSON.stringify({
             question: q,
+            currentFen: gameRef.current.fen(),
             moveContext: pendingMove,
             chatHistory: historyPayload,
           }),

@@ -578,7 +578,7 @@ Otherwise use:
  * Handles user follow-up questions about the current position/move.
  */
 app.post("/api/chat", async (req, res) => {
-    const { question, moveContext, chatHistory } = req.body;
+    const { question, currentFen, moveContext, chatHistory } = req.body;
 
     if (!question) {
         return res.status(400).json({ error: "question is required" });
@@ -587,8 +587,17 @@ app.post("/api/chat", async (req, res) => {
     console.log(`[CHAT] Question: "${question}"`);
 
     try {
-        const fenToAnalyze = moveContext?.afterFen || moveContext?.beforeFen || "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-
+        const fenToAnalyze =
+            currentFen ||
+            moveContext?.afterFen ||
+            moveContext?.beforeFen ||
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        
+        console.log("\n========== CHAT POSITION ==========");
+        console.log("Current FEN received:", currentFen);
+        console.log("FEN being analyzed:", fenToAnalyze);
+        console.log("===================================\n");
+        
         let stockfishMoves = [];
         try {
             stockfishMoves = await analyzeFenWithStockfish(fenToAnalyze, 15, 5);
