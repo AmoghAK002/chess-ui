@@ -70,6 +70,7 @@ const LEGAL_CAPTURE_RING =
 function App() {
   // Single source of truth for game state
   const gameRef = useRef(new Chess());
+  const baseFenRef = useRef(gameRef.current.fen());
 
   // State to trigger re-renders when gameRef mutates
   const [fen, setFen] = useState<string>(gameRef.current.fen());
@@ -500,7 +501,7 @@ function App() {
       const verboseHistory = gameRef.current.history({ verbose: true });
       const movesToKeep = verboseHistory.slice(0, Math.max(index, 0));
 
-      const rebuilt = new Chess();
+      const rebuilt = new Chess(baseFenRef.current);
       for (const move of movesToKeep) {
         rebuilt.move({
           from: move.from,
@@ -592,6 +593,8 @@ function App() {
       // Replace the current game with this position
       gameRef.current = newGame;
 
+      baseFenRef.current = newGame.fen();
+
       // Update React state so the board re-renders
       setFen(newGame.fen());
 
@@ -620,6 +623,10 @@ function App() {
     stopAudioAndHighlight();
 
     gameRef.current = new Chess();
+
+    // Reset the base position to the standard starting position
+    baseFenRef.current = gameRef.current.fen();
+
     setFen(gameRef.current.fen());
     setLastMove(null);
     setPendingMove(null);
