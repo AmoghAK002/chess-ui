@@ -382,25 +382,13 @@ Note: For any move object inside segments, 'from' and 'to' MUST be valid board s
 
         console.log("============================================\n");
 
-        const segmentsWithAudio = await Promise.all(
-            (parsedJson.segments || []).map(async (seg) => {
-                const audioDataUri = await generateTTSForText(seg.text);
-                return {
-                    text: seg.text,
-                    move: seg.move || null,
-                    audioDataUri: audioDataUri
-                };
-            })
-        );
+        const segments = (parsedJson.segments || []).map((seg) => ({
+            text: seg.text,
+            move: seg.move || null
+        }));
 
-        console.log("\n========== TTS RESULTS ==========");
-        console.log("Total segments:", segmentsWithAudio.length);
-
-        segmentsWithAudio.forEach((segment, index) => {
-            console.log(
-                `Segment ${index + 1}:`,
-                segment.audioDataUri ? "AUDIO GENERATED ✅" : "NO AUDIO ❌"
-            );
+        segments.forEach((segment, index) => {
+            console.log(`Segment ${index + 1}:`, "NO AUDIO (on-demand only)");
 
             console.log("Text:", segment.text);
 
@@ -429,12 +417,159 @@ Note: For any move object inside segments, 'from' and 'to' MUST be valid board s
             topMovesAfter,
             moveAnalysis,
             narrative: parsedJson.narrative || geminiResponse.text,
-            segments: segmentsWithAudio
+            segments: segments
         });
 
     } catch (error) {
         console.error("Analysis route error:", error);
         res.status(500).json({ error: "Failed to analyze move" });
+    }
+});
+
+/**
+ * POST /api/analyze-position
+ * Analyzes any valid chess position provided as a FEN.
+ */
+app.post("/api/analyze-position", async (req, res) => {
+    const { fen } = req.body;
+
+    if (!fen) {
+        return res.status(400).json({
+            error: "FEN is required"
+        });
+    }
+
+    // Validate the FEN using chess.js
+    let chess;
+
+    try {
+        chess = new Chess(fen);
+    } catch (error) {
+        return res.status(400).json({
+            error: "Invalid FEN"
+        });
+    }
+
+    console.log("\n========== FEN POSITION ANALYSIS ==========");
+    console.log("FEN:");
+    console.log(fen);
+    console.log("Side to move:", chess.turn() === "w" ? "WHITE" : "BLACK");
+    console.log("===========================================\n");
+
+    try {
+        // Run Stockfish analysis
+        const topMoves = await analyzeFenWithStockfish(fen, 15, 5);
+
+        console.log("========== STOCKFISH POSITION RESULTS ==========");
+        console.table(topMoves);
+        console.log("================================================\n");
+
+        const bestMove = topMoves.length > 0 ? topMoves[0] : null;
+
+        const sideToMove = chess.turn() === "w" ? "White" : "Black";
+
+        const prompt = `
+You are a friendly, expert human chess coach.
+
+Analyze this chess position for the player.
+
+Current position:
+- FEN: ${fen}
+- Side to move: ${sideToMove}
+
+Best candidate moves:
+${JSON.stringify(topMoves, null, 2)}
+
+INSTRUCTIONS:
+
+1. Explain the position naturally like a human chess coach.
+2. NEVER mention Stockfish, engine, FEN, centipawns, MultiPV, depth, PV, or rank numbers.
+3. Explain:
+   - What is happening in the position
+   - Which side has the main ideas
+   - What the player should focus on
+   - The strongest candidate move and why
+4. Use standard chess notation such as e4, Nf3, Qxd5.
+5. Keep the explanation concise and useful.
+6. Write approximately 3-5 sentences.
+
+OUTPUT REQUIREMENTS:
+
+Respond ONLY with valid JSON:
+
+{
+  "narrative": "Complete explanation of the position...",
+  "segments": [
+    {
+      "text": "Explanation sentence...",
+      "move": null
+    },
+    {
+      "text": "Explanation involving a specific move...",
+      "move": {
+        "from": "e2",
+        "to": "e4",
+        "san": "e4",
+        "type": "best_move"
+      }
+    }
+  ]
+}
+
+IMPORTANT:
+Only include a move object when that segment explicitly discusses that move.
+Otherwise use:
+
+"move": null
+`;
+
+        const geminiResponse = await ai.models.generateContent({
+            model: "gemini-3.5-flash",
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json"
+            }
+        });
+
+        const parsedJson = parseGeminiJson(geminiResponse.text);
+
+        console.log("========== GEMINI POSITION COACH ==========");
+        console.log("Narrative:");
+        console.log(parsedJson.narrative);
+
+        console.log("\nSegments:");
+        console.log(JSON.stringify(parsedJson.segments, null, 2));
+        console.log("============================================\n");
+
+        // Build segments (no automatic audio generation)
+        const segments = (parsedJson.segments || []).map((seg) => ({
+            text: seg.text,
+            move: seg.move || null,
+        }));
+
+        console.log("========== POSITION SEGMENTS ==========");
+
+        segments.forEach((segment, index) => {
+            console.log(`Segment ${index + 1}:`, "NO AUDIO (on-demand only)");
+        });
+
+        console.log("========================================\n");
+
+        res.json({
+            fen,
+            sideToMove,
+            topMoves,
+            bestMove,
+            narrative: parsedJson.narrative || geminiResponse.text,
+            segments: segments,
+        });
+
+    } catch (error) {
+        console.error("Position analysis error:", error);
+
+        res.status(500).json({
+            error: "Failed to analyze position"
+        });
     }
 });
 
@@ -513,20 +648,14 @@ If a segment discusses a specific move, provide its 'from' and 'to' squares (e.g
 
         const parsedJson = parseGeminiJson(geminiResponse.text);
 
-        const segmentsWithAudio = await Promise.all(
-            (parsedJson.segments || []).map(async (seg) => {
-                const audioDataUri = await generateTTSForText(seg.text);
-                return {
-                    text: seg.text,
-                    move: seg.move || null,
-                    audioDataUri: audioDataUri
-                };
-            })
-        );
+        const segments = (parsedJson.segments || []).map((seg) => ({
+            text: seg.text,
+            move: seg.move || null,
+        }));
 
         res.json({
             narrative: parsedJson.narrative || geminiResponse.text,
-            segments: segmentsWithAudio
+            segments,
         });
 
     } catch (error) {
@@ -548,6 +677,48 @@ app.get("/api/test-gemini", async (req, res) => {
     } catch (error) {
         console.error("Gemini error:", error);
         res.status(500).json({ error: error.message });
+    }
+});
+
+// ==========================================
+// ON-DEMAND TEXT TO SPEECH
+// ==========================================
+
+app.post("/api/tts", async (req, res) => {
+    try {
+        const { text } = req.body;
+
+        // Validate text
+        if (!text || !text.trim()) {
+            return res.status(400).json({
+                error: "Text is required for TTS",
+            });
+        }
+
+        console.log("\n========== TTS REQUEST ==========");
+        console.log("Text:", text);
+
+        // Generate audio only when explicitly requested
+        const audioDataUri = await generateTTSForText(text);
+
+        if (!audioDataUri) {
+            return res.status(500).json({
+                error: "TTS generation failed",
+            });
+        }
+
+        console.log("TTS generated successfully ✅");
+        console.log("=================================\n");
+
+        res.json({
+            audioDataUri,
+        });
+    } catch (error) {
+        console.error("TTS endpoint error:", error);
+
+        res.status(500).json({
+            error: "Failed to generate speech",
+        });
     }
 });
 

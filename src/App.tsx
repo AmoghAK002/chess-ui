@@ -34,6 +34,7 @@ type ChatMessage = {
   text: string;
   moveContext?: PendingMove;
   segments?: Segment[];
+  isGeneratingAudio?: boolean;
 };
 
 type LastMove = {
@@ -72,6 +73,9 @@ function App() {
 
   // State to trigger re-renders when gameRef mutates
   const [fen, setFen] = useState<string>(gameRef.current.fen());
+
+  const [fenInput, setFenInput] = useState("");
+  const [fenError, setFenError] = useState("");
 
   const [lastMove, setLastMove] = useState<LastMove | null>(null);
   const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
@@ -166,6 +170,72 @@ function App() {
       }
     },
     [stopAudioAndHighlight],
+  );
+
+  const handlePlayAudio = useCallback(
+    async (message: ChatMessage) => {
+      if (!message.segments || message.segments.length === 0) {
+        return;
+      }
+
+      requestIdRef.current++;
+      const currentRequestId = requestIdRef.current;
+
+      stopAudioAndHighlight();
+
+      // Mark this message as generating audio
+      setChatMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === message.id ? { ...msg, isGeneratingAudio: true } : msg,
+        ),
+      );
+
+      try {
+        const segmentsWithAudio: Segment[] = [];
+
+        // Generate audio for each segment one by one
+        for (const segment of message.segments) {
+          if (requestIdRef.current !== currentRequestId) {
+            return;
+          }
+
+          const response = await fetch("http://localhost:5000/api/tts", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              text: segment.text,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`TTS API error: ${response.status}`);
+          }
+
+          const data = await response.json();
+
+          segmentsWithAudio.push({
+            ...segment,
+            audioDataUri: data.audioDataUri,
+          });
+        }
+
+        // Play audio sequentially with board highlighting
+        if (requestIdRef.current === currentRequestId) {
+          await playSegments(segmentsWithAudio, currentRequestId);
+        }
+      } catch (error) {
+        console.error("On-demand TTS error:", error);
+      } finally {
+        setChatMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === message.id ? { ...msg, isGeneratingAudio: false } : msg,
+          ),
+        );
+      }
+    },
+    [playSegments, stopAudioAndHighlight],
   );
 
   const clearSelection = useCallback(() => {
@@ -267,10 +337,6 @@ function App() {
       };
 
       setChatMessages((prev) => [...prev, coachMsg]);
-
-      if (data.segments && data.segments.length > 0) {
-        playSegments(data.segments, currentRequestId);
-      }
     } catch (error) {
       console.error("Explain move error:", error);
       setChatMessages((prev) => [
@@ -285,6 +351,64 @@ function App() {
       setIsExplaining(false);
     }
   }, [pendingMove, playSegments, stopAudioAndHighlight]);
+
+  const analyzePosition = useCallback(async () => {
+    requestIdRef.current++;
+    const currentRequestId = requestIdRef.current;
+
+    stopAudioAndHighlight();
+
+    setIsExplaining(true);
+
+    try {
+      const response = await fetch(
+        "http://localhost:5000/api/analyze-position",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            fen: gameRef.current.fen(),
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (requestIdRef.current !== currentRequestId) return;
+
+      const coachMsg: ChatMessage = {
+        id: `position-${Date.now()}`,
+        role: "model",
+        text: data.narrative || "Here is the position analysis.",
+        segments: data.segments || [],
+      };
+
+      setChatMessages((prev) => [...prev, coachMsg]);
+
+      if (data.segments && data.segments.length > 0) {
+        playSegments(data.segments, currentRequestId);
+      }
+    } catch (error) {
+      console.error("Position analysis error:", error);
+
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `position-error-${Date.now()}`,
+          role: "model",
+          text: "Sorry, I couldn't analyze this position.",
+        },
+      ]);
+    } finally {
+      setIsExplaining(false);
+    }
+  }, [playSegments, stopAudioAndHighlight]);
 
   const handleAskQuestion = useCallback(
     async (questionText?: string) => {
@@ -344,10 +468,6 @@ function App() {
         };
 
         setChatMessages((prev) => [...prev, coachMsg]);
-
-        if (data.segments && data.segments.length > 0) {
-          playSegments(data.segments, currentRequestId);
-        }
       } catch (err) {
         console.error("Chat question error:", err);
         setChatMessages((prev) => [
@@ -453,6 +573,47 @@ function App() {
     },
     [selectedSquare, legalTargets, makeMove, clearSelection],
   );
+  const loadFenPosition = useCallback(() => {
+    const inputFen = fenInput.trim();
+
+    if (!inputFen) {
+      setFenError("Please enter a FEN.");
+      return;
+    }
+
+    try {
+      // Validate the FEN by creating a Chess instance
+      const newGame = new Chess(inputFen);
+
+      // Stop any current audio/highlighting
+      requestIdRef.current++;
+      stopAudioAndHighlight();
+
+      // Replace the current game with this position
+      gameRef.current = newGame;
+
+      // Update React state so the board re-renders
+      setFen(newGame.fen());
+
+      // Clear previous game-related UI state
+      setLastMove(null);
+      setPendingMove(null);
+      setChatMessages([]);
+      clearSelection();
+      setShowGameOverModal(false);
+
+      // Clear any error
+      setFenError("");
+
+      console.log("========== FEN LOADED ==========");
+      console.log(newGame.fen());
+      console.log("Side to move:", newGame.turn() === "w" ? "WHITE" : "BLACK");
+      console.log("================================");
+    } catch (error) {
+      console.error("Invalid FEN:", error);
+      setFenError("Invalid FEN. Please check and try again.");
+    }
+  }, [fenInput, stopAudioAndHighlight, clearSelection]);
 
   const resetGame = useCallback(() => {
     requestIdRef.current++;
@@ -709,9 +870,67 @@ function App() {
                 </div>
               </div>
 
+              <div className="lg:col-span-6 flex flex-col items-center">
+                {/* FEN Position Loader */}
+                <div className="w-full max-w-[480px] lg:max-w-[540px] mb-4">
+                  <div className="bg-slate-900 border border-slate-700 rounded-2xl p-4 shadow-lg">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <h2 className="text-sm font-semibold text-white">
+                          Load Chess Position
+                        </h2>
+
+                        <p className="text-xs text-slate-400 mt-1">
+                          Paste any valid FEN to analyze or continue playing
+                          from that position.
+                        </p>
+                      </div>
+
+                      <span className="text-lg">♟</span>
+                    </div>
+
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <input
+                        type="text"
+                        value={fenInput}
+                        onChange={(e) => {
+                          setFenInput(e.target.value);
+                          setFenError("");
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            loadFenPosition();
+                          }
+                        }}
+                        placeholder="Paste FEN here..."
+                        className="flex-1 bg-slate-800 border border-slate-700 text-white placeholder-slate-500 text-xs rounded-xl px-3 py-2.5 focus:outline-none focus:border-blue-500 transition"
+                      />
+
+                      <button
+                        onClick={loadFenPosition}
+                        className="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-xs px-4 py-2.5 rounded-xl font-semibold transition whitespace-nowrap"
+                      >
+                        Load Position
+                      </button>
+
+                      <button
+                        onClick={analyzePosition}
+                        disabled={isExplaining}
+                        className="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs px-4 py-2.5 rounded-xl font-semibold transition whitespace-nowrap"
+                      >
+                        {isExplaining ? "Analyzing..." : "✦ Analyze Position"}
+                      </button>
+                    </div>
+
+                    {fenError && (
+                      <p className="text-red-400 text-xs mt-2">{fenError}</p>
+                    )}
+                  </div>
+                </div>
+              </div>
               {/* Chess Board */}
               <div className="flex justify-center bg-[#0f172a] p-3 sm:p-5 lg:p-7">
-                <div className="w-full max-w-[680px] overflow-hidden rounded-xl shadow-2xl ring-1 ring-black/40">
+                <div className="w-full max-w-170 overflow-hidden rounded-xl shadow-2xl ring-1 ring-black/40">
                   <Chessboard options={chessboardOptions} />
                 </div>
               </div>
@@ -753,7 +972,7 @@ function App() {
                   </p>
                 </div>
 
-                <span className="rounded-lg bg-white/[0.04] px-2.5 py-1 text-[10px] font-medium text-slate-500">
+                <span className="rounded-lg bg-white/4 px-2.5 py-1 text-[10px] font-medium text-slate-500">
                   {totalMoves} {totalMoves === 1 ? "move" : "moves"}
                 </span>
               </div>
@@ -964,6 +1183,28 @@ function App() {
                           >
                             {msg.text}
                           </div>
+
+                          {msg.role === "model" &&
+                            msg.segments &&
+                            msg.segments.length > 0 && (
+                              <button
+                                onClick={() => handlePlayAudio(msg)}
+                                disabled={msg.isGeneratingAudio}
+                                className="mt-2 flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {msg.isGeneratingAudio ? (
+                                  <>
+                                    <span className="animate-pulse">🔄</span>
+                                    Generating audio...
+                                  </>
+                                ) : (
+                                  <>
+                                    <span>🔊</span>
+                                    Listen
+                                  </>
+                                )}
+                              </button>
+                            )}
 
                           {msg.moveContext && (
                             <div className="mt-1.5 px-1 text-[9px] text-slate-600">
