@@ -1,3 +1,4 @@
 stockfish-windows-x86-64-avx2.exe
 .env
 node_modules/
+firebase-service-account.json

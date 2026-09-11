@@ -19,6 +19,7 @@ app.use(express.json());
 
 const PORT = 5000;
 
+const { db } = require("./firebase-admin");
 /**
  * Converts PCM buffer to WAV Base64 Data URI in memory
  */
