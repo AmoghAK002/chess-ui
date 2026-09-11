@@ -67,6 +67,8 @@ const LEGAL_MOVE_DOT =
 const LEGAL_CAPTURE_RING =
   "radial-gradient(circle, transparent 60%, rgba(0, 0, 0, 0.18) 62%, rgba(0, 0, 0, 0.18) 72%, transparent 74%)";
 
+const POC_USER_EMAIL = "amoghak2004@gmail.com";
+
 function App() {
   // Single source of truth for game state
   const gameRef = useRef(new Chess());
@@ -313,7 +315,10 @@ function App() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(pendingMove),
+        body: JSON.stringify({
+          ...pendingMove,
+          userEmail: POC_USER_EMAIL,
+        }),
       });
 
       if (!response.ok) {
@@ -810,7 +815,7 @@ function App() {
     <div className="min-h-screen bg-[#0b1120] text-white">
       {/* Top Navigation */}
       <header className="border-b border-white/10 bg-[#0b1120]/95 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-[1500px] items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
+        <div className="mx-auto flex max-w-375 items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-500/15 text-xl ring-1 ring-blue-400/20">
               ♟
@@ -836,7 +841,7 @@ function App() {
       </header>
 
       {/* Main Application */}
-      <main className="mx-auto max-w-[1500px] px-3 py-4 sm:px-6 sm:py-6 lg:px-8 lg:py-8">
+      <main className="mx-auto max-w-375 px-3 py-4 sm:px-6 sm:py-6 lg:px-8 lg:py-8">
         <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(560px,1.15fr)_minmax(420px,0.85fr)]">
           {/* ================= BOARD AREA ================= */}
           <section className="min-w-0">
@@ -880,7 +885,7 @@ function App() {
 
               <div className="lg:col-span-6 flex flex-col items-center">
                 {/* FEN Position Loader */}
-                <div className="w-full max-w-[480px] lg:max-w-[540px] mb-4">
+                <div className="w-full max-w-120 lg:max-w-135 mb-4">
                   <div className="bg-slate-900 border border-slate-700 rounded-2xl p-4 shadow-lg">
                     <div className="flex items-center justify-between mb-3">
                       <div>
@@ -949,7 +954,7 @@ function App() {
                   <button
                     onClick={undoLastMove}
                     disabled={totalMoves === 0}
-                    className="group flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-slate-300 transition hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
+                    className="group flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/4 px-4 py-3 text-sm font-semibold text-slate-300 transition hover:bg-white/8 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
                   >
                     <span className="text-base transition group-hover:-translate-x-0.5">
                       ↶
@@ -1000,7 +1005,7 @@ function App() {
                       {moveHistory.map((pair) => (
                         <tr
                           key={pair.number}
-                          className="border-b border-white/[0.05] last:border-0 hover:bg-white/[0.025]"
+                          className="border-b border-white/[0.05] last:border-0 hover:bg-white/2.5"
                         >
                           <td className="px-4 py-2.5 font-mono text-xs text-slate-600">
                             {pair.number}.

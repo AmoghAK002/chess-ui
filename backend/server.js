@@ -221,9 +221,10 @@ app.post("/api/analyze", async (req, res) => {
         afterFen,
         playerMove,
         san,
-        playerColor
+        playerColor,
+        userEmail,
     } = req.body;
-
+    console.log("POC USER:", userEmail);
     if (
         moveIndex === undefined ||
         moveNumber === undefined ||
@@ -592,12 +593,12 @@ app.post("/api/chat", async (req, res) => {
             moveContext?.afterFen ||
             moveContext?.beforeFen ||
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-        
+
         console.log("\n========== CHAT POSITION ==========");
         console.log("Current FEN received:", currentFen);
         console.log("FEN being analyzed:", fenToAnalyze);
         console.log("===================================\n");
-        
+
         let stockfishMoves = [];
         try {
             stockfishMoves = await analyzeFenWithStockfish(fenToAnalyze, 15, 5);
