@@ -431,6 +431,48 @@ Note: For any move object inside segments, 'from' and 'to' MUST be valid board s
 });
 
 /**
+ * POST /api/games
+ * Creates a new chess game for a user.
+ */
+app.post("/api/games", async (req, res) => {
+    const { userEmail, gameId, startingFen } = req.body;
+
+    if (!userEmail || !gameId || !startingFen) {
+        return res.status(400).json({
+            error: "userEmail, gameId and startingFen are required",
+        });
+    }
+
+    try {
+        await db
+            .collection("users")
+            .doc(userEmail)
+            .collection("games")
+            .doc(gameId)
+            .set({
+                gameId,
+                userEmail,
+                startingFen,
+                status: "active",
+                startedAt: new Date(),
+            });
+
+        console.log("GAME CREATED:", gameId);
+
+        res.json({
+            success: true,
+            gameId,
+        });
+    } catch (error) {
+        console.error("Game creation error:", error);
+
+        res.status(500).json({
+            error: "Failed to create game",
+        });
+    }
+});
+
+/**
  * POST /api/analyze-position
  * Analyzes any valid chess position provided as a FEN.
  */
