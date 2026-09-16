@@ -632,7 +632,7 @@ function App() {
     stopAudioAndHighlight();
 
     gameRef.current = new Chess();
-
+    gameIdRef.current = crypto.randomUUID();
     // Reset the base position to the standard starting position
     baseFenRef.current = gameRef.current.fen();
 
