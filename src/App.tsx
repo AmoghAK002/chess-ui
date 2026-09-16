@@ -6,6 +6,7 @@ import { Chessboard } from "react-chessboard";
 import type { PieceDropHandlerArgs } from "react-chessboard";
 
 type PendingMove = {
+  gameId: string;
   moveIndex: number;
   moveNumber: number;
   beforeFen: string;
@@ -72,6 +73,7 @@ const POC_USER_EMAIL = "amoghak2004@gmail.com";
 function App() {
   // Single source of truth for game state
   const gameRef = useRef(new Chess());
+  const gameIdRef = useRef(crypto.randomUUID());
   const baseFenRef = useRef(gameRef.current.fen());
 
   // State to trigger re-renders when gameRef mutates
@@ -267,6 +269,7 @@ function App() {
           const uci = result.from + result.to;
 
           const newMoveContext: PendingMove = {
+            gameId: gameIdRef.current,
             moveIndex,
             moveNumber,
             beforeFen,

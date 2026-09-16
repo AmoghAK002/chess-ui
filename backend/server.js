@@ -216,6 +216,7 @@ function parseGeminiJson(rawText) {
  */
 app.post("/api/analyze", async (req, res) => {
     const {
+        gameId,
         moveIndex,
         moveNumber,
         beforeFen,
@@ -226,6 +227,7 @@ app.post("/api/analyze", async (req, res) => {
         userEmail,
     } = req.body;
     console.log("POC USER:", userEmail);
+    console.log("POC GAME ID:", gameId);
     if (
         moveIndex === undefined ||
         moveNumber === undefined ||
