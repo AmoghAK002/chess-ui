@@ -248,6 +248,39 @@ function App() {
     setLegalTargets([]);
   }, []);
 
+  const createGame = useCallback(
+    async (gameId: string, startingFen: string) => {
+      try {
+        const response = await fetch("http://localhost:5000/api/games", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            userEmail: POC_USER_EMAIL,
+            gameId,
+            startingFen,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error("Failed to create game");
+        }
+
+        const data = await response.json();
+
+        console.log("GAME CREATED:", data);
+      } catch (error) {
+        console.error("Game creation failed:", error);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    createGame(gameIdRef.current, gameRef.current.fen());
+  }, [createGame]);
+
   const makeMove = useCallback(
     (from: string, to: string, promotion: string = "q"): boolean => {
       try {
@@ -633,6 +666,9 @@ function App() {
 
     gameRef.current = new Chess();
     gameIdRef.current = crypto.randomUUID();
+
+    createGame(gameIdRef.current, gameRef.current.fen());
+
     // Reset the base position to the standard starting position
     baseFenRef.current = gameRef.current.fen();
 
@@ -1008,7 +1044,7 @@ function App() {
                       {moveHistory.map((pair) => (
                         <tr
                           key={pair.number}
-                          className="border-b border-white/[0.05] last:border-0 hover:bg-white/2.5"
+                          className="border-b border-white/5 last:border-0 hover:bg-white/2.5"
                         >
                           <td className="px-4 py-2.5 font-mono text-xs text-slate-600">
                             {pair.number}.
@@ -1052,12 +1088,12 @@ function App() {
           </section>
 
           {/* ================= COACH AREA ================= */}
-          <section className="flex min-h-0 flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#111827] shadow-2xl shadow-black/20 xl:h-[calc(100vh-145px)] xl:min-h-[720px]">
+          <section className="flex min-h-0 flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#111827] shadow-2xl shadow-black/20 xl:h-[calc(100vh-145px)] xl:min-h-180">
             {/* Coach Header */}
             <div className="flex items-center justify-between border-b border-white/10 px-4 py-4 sm:px-5">
               <div className="flex items-center gap-3">
                 <div className="relative">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 text-lg shadow-lg shadow-blue-600/20">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-linear-to-br from-blue-500 to-indigo-600 text-lg shadow-lg shadow-blue-600/20">
                     ♟
                   </div>
 
@@ -1098,7 +1134,7 @@ function App() {
 
             {/* Current Move Context */}
             {pendingMove && (
-              <div className="border-b border-white/[0.06] bg-blue-500/[0.035] px-4 py-3 sm:px-5">
+              <div className="border-b border-white/6 bg-blue-500/[0.035] px-4 py-3 sm:px-5">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-[9px] font-semibold uppercase tracking-[0.16em] text-blue-400/70">
@@ -1118,7 +1154,7 @@ function App() {
                     </div>
                   </div>
 
-                  <span className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-[9px] text-slate-500">
+                  <span className="rounded-lg border border-white/10 bg-white/4 px-2 py-1 text-[9px] text-slate-500">
                     Move {pendingMove.moveNumber}
                   </span>
                 </div>
@@ -1153,7 +1189,7 @@ function App() {
                         key={idx}
                         onClick={() => handleAskQuestion(chip)}
                         disabled={isExplaining}
-                        className="rounded-xl border border-white/10 bg-white/[0.025] px-3 py-2.5 text-left text-[11px] text-slate-400 transition hover:border-blue-500/30 hover:bg-blue-500/[0.06] hover:text-blue-300 disabled:opacity-40"
+                        className="rounded-xl border border-white/10 bg-white/2.5 px-3 py-2.5 text-left text-[11px] text-slate-400 transition hover:border-blue-500/30 hover:bg-blue-500/6 hover:text-blue-300 disabled:opacity-40"
                       >
                         {chip}
                       </button>
@@ -1236,7 +1272,7 @@ function App() {
 
                   {isExplaining && (
                     <div className="flex items-center gap-2 px-1 text-xs text-slate-500">
-                      <div className="flex items-center gap-1 rounded-xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+                      <div className="flex items-center gap-1 rounded-xl border border-white/6 bg-white/2.5 px-3 py-2">
                         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400 [animation-delay:-0.3s]" />
                         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400 [animation-delay:-0.15s]" />
                         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400" />
@@ -1318,13 +1354,13 @@ function App() {
                 </p>
               </div>
 
-              <div className="rounded-lg bg-white/[0.04] px-2.5 py-1 text-[10px] text-slate-500">
+              <div className="rounded-lg bg-white/4 px-2.5 py-1 text-[10px] text-slate-500">
                 Live
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-2">
-              <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] p-3">
+              <div className="rounded-xl border border-white/6 bg-white/2.5 p-3">
                 <p className="text-[9px] uppercase tracking-wider text-slate-600">
                   Turn
                 </p>
@@ -1333,7 +1369,7 @@ function App() {
                 </p>
               </div>
 
-              <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] p-3">
+              <div className="rounded-xl border border-white/6 bg-white/2.5 p-3">
                 <p className="text-[9px] uppercase tracking-wider text-slate-600">
                   Status
                 </p>
@@ -1344,7 +1380,7 @@ function App() {
             </div>
 
             <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] p-3">
+              <div className="rounded-xl border border-white/6 bg-white/2.5 p-3">
                 <p className="mb-2 text-[9px] uppercase tracking-wider text-slate-600">
                   Captured by White
                 </p>
@@ -1364,7 +1400,7 @@ function App() {
                 </div>
               </div>
 
-              <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] p-3">
+              <div className="rounded-xl border border-white/6 bg-white/2.5 p-3">
                 <p className="mb-2 text-[9px] uppercase tracking-wider text-slate-600">
                   Captured by Black
                 </p>
@@ -1398,7 +1434,7 @@ function App() {
             </div>
 
             <div className="space-y-2">
-              <div className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.025] px-3 py-2.5">
+              <div className="flex items-center justify-between rounded-xl border border-white/6 bg-white/2.5 px-3 py-2.5">
                 <span className="text-xs text-slate-500">Latest move</span>
 
                 <span className="font-mono text-xs font-semibold text-slate-300">
@@ -1406,7 +1442,7 @@ function App() {
                 </span>
               </div>
 
-              <div className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.025] px-3 py-2.5">
+              <div className="flex items-center justify-between rounded-xl border border-white/6 bg-white/2.5 px-3 py-2.5">
                 <span className="text-xs text-slate-500">Coach</span>
 
                 <span className="text-xs font-semibold text-emerald-400">
@@ -1418,7 +1454,7 @@ function App() {
                 </span>
               </div>
 
-              <div className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.025] px-3 py-2.5">
+              <div className="flex items-center justify-between rounded-xl border border-white/6 bg-white/2.5 px-3 py-2.5">
                 <span className="text-xs text-slate-500">Board highlight</span>
 
                 <span className="text-xs font-semibold text-blue-400">
@@ -1459,7 +1495,7 @@ function App() {
 
                 <button
                   onClick={() => setShowGameOverModal(false)}
-                  className="flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-slate-300 transition hover:bg-white/[0.08] hover:text-white"
+                  className="flex-1 rounded-xl border border-white/10 bg-white/4 px-4 py-3 text-sm font-semibold text-slate-300 transition hover:bg-white/8 hover:text-white"
                 >
                   Continue Reviewing
                 </button>
