@@ -473,6 +473,75 @@ app.post("/api/games", async (req, res) => {
 });
 
 /**
+* POST /api/games/:gameId/moves
+* Saves a chess move inside an existing game.
+*/
+app.post("/api/games/:gameId/moves", async (req, res) => {
+    const { gameId } = req.params;
+
+    const {
+        userEmail,
+        moveIndex,
+        moveNumber,
+        beforeFen,
+        afterFen,
+        playerMove,
+        san,
+        playerColor,
+    } = req.body;
+
+    if (
+        !userEmail ||
+        !gameId ||
+        moveIndex === undefined ||
+        !beforeFen ||
+        !afterFen ||
+        !playerMove ||
+        !san ||
+        !playerColor
+    ) {
+        return res.status(400).json({
+            error: "Missing required move data",
+        });
+    }
+
+    try {
+        const moveRef = db
+            .collection("users")
+            .doc(userEmail)
+            .collection("games")
+            .doc(gameId)
+            .collection("moves")
+            .doc(String(moveIndex));
+
+        await moveRef.set({
+            moveIndex,
+            moveNumber,
+            beforeFen,
+            afterFen,
+            playerMove,
+            san,
+            playerColor,
+            createdAt: new Date(),
+        });
+
+        console.log("MOVE SAVED:", gameId, moveIndex, san);
+
+        res.json({
+            success: true,
+            gameId,
+            moveIndex,
+        });
+    } catch (error) {
+        console.error("Move save error:", error);
+
+        res.status(500).json({
+            error: "Failed to save move",
+        });
+    }
+});
+
+/**
  * POST /api/analyze-position
  * Analyzes any valid chess position provided as a FEN.
  */

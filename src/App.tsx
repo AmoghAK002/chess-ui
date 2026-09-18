@@ -280,6 +280,39 @@ function App() {
   useEffect(() => {
     createGame(gameIdRef.current, gameRef.current.fen());
   }, [createGame]);
+  const saveMove = useCallback(async (move: PendingMove) => {
+    try {
+      const response = await fetch(
+        `http://localhost:5000/api/games/${move.gameId}/moves`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            userEmail: POC_USER_EMAIL,
+            moveIndex: move.moveIndex,
+            moveNumber: move.moveNumber,
+            beforeFen: move.beforeFen,
+            afterFen: move.afterFen,
+            playerMove: move.playerMove,
+            san: move.san,
+            playerColor: move.playerColor,
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to save move");
+      }
+
+      const data = await response.json();
+
+      console.log("MOVE SAVED:", data);
+    } catch (error) {
+      console.error("Move save failed:", error);
+    }
+  }, []);
 
   const makeMove = useCallback(
     (from: string, to: string, promotion: string = "q"): boolean => {
@@ -314,6 +347,8 @@ function App() {
 
           console.log("MOVE CONTEXT:", newMoveContext);
 
+          saveMove(newMoveContext);
+
           // Cancel any active audio/highlights when a new move is made
           requestIdRef.current++;
           stopAudioAndHighlight();
@@ -333,7 +368,7 @@ function App() {
 
       return false;
     },
-    [stopAudioAndHighlight],
+    [saveMove, stopAudioAndHighlight],
   );
 
   const explainMove = useCallback(async () => {
