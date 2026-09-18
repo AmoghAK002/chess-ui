@@ -75,6 +75,7 @@ function App() {
   const gameRef = useRef(new Chess());
   const gameIdRef = useRef(crypto.randomUUID());
   const baseFenRef = useRef(gameRef.current.fen());
+  const gameCreatedRef = useRef(false);
 
   // State to trigger re-renders when gameRef mutates
   const [fen, setFen] = useState<string>(gameRef.current.fen());
@@ -270,16 +271,16 @@ function App() {
         const data = await response.json();
 
         console.log("GAME CREATED:", data);
+        gameCreatedRef.current = true;
+        return true;
       } catch (error) {
         console.error("Game creation failed:", error);
+        return false;
       }
     },
     [],
   );
 
-  useEffect(() => {
-    createGame(gameIdRef.current, gameRef.current.fen());
-  }, [createGame]);
   const saveMove = useCallback(async (move: PendingMove) => {
     try {
       const response = await fetch(
@@ -315,7 +316,11 @@ function App() {
   }, []);
 
   const makeMove = useCallback(
-    (from: string, to: string, promotion: string = "q"): boolean => {
+    async (
+      from: string,
+      to: string,
+      promotion: string = "q",
+    ): Promise<boolean> => {
       try {
         const beforeFen = gameRef.current.fen();
         const playerColor = gameRef.current.turn() === "w" ? "WHITE" : "BLACK";
@@ -347,7 +352,19 @@ function App() {
 
           console.log("MOVE CONTEXT:", newMoveContext);
 
-          saveMove(newMoveContext);
+          if (!gameCreatedRef.current) {
+            const gameCreated = await createGame(
+              gameIdRef.current,
+              baseFenRef.current,
+            );
+
+            if (!gameCreated) {
+              gameRef.current.undo();
+              return false;
+            }
+          }
+
+          await saveMove(newMoveContext);
 
           // Cancel any active audio/highlights when a new move is made
           requestIdRef.current++;
@@ -617,18 +634,19 @@ function App() {
     ({ sourceSquare, targetSquare }: PieceDropHandlerArgs): boolean => {
       clearSelection();
       if (!targetSquare) return false;
-      return makeMove(sourceSquare, targetSquare, "q");
+      void makeMove(sourceSquare, targetSquare, "q");
+      return true;
     },
     [makeMove, clearSelection],
   );
 
   const onSquareClick = useCallback(
-    ({ square }: { square: string; piece?: unknown }) => {
+    async ({ square }: { square: string; piece?: unknown }) => {
       const clickedSquare = square as Square;
       const game = gameRef.current;
 
       if (selectedSquare && legalTargets.includes(clickedSquare)) {
-        const moved = makeMove(selectedSquare, clickedSquare, "q");
+        const moved = await makeMove(selectedSquare, clickedSquare, "q");
         clearSelection();
         if (moved) return;
       }
@@ -670,6 +688,10 @@ function App() {
       // Replace the current game with this position
       gameRef.current = newGame;
 
+      // Create a new game/session for the loaded FEN
+      gameIdRef.current = crypto.randomUUID();
+      gameCreatedRef.current = false;
+
       baseFenRef.current = newGame.fen();
 
       // Update React state so the board re-renders
@@ -701,8 +723,7 @@ function App() {
 
     gameRef.current = new Chess();
     gameIdRef.current = crypto.randomUUID();
-
-    createGame(gameIdRef.current, gameRef.current.fen());
+    gameCreatedRef.current = false;
 
     // Reset the base position to the standard starting position
     baseFenRef.current = gameRef.current.fen();
