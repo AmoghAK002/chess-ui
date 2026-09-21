@@ -540,7 +540,48 @@ app.post("/api/games/:gameId/moves", async (req, res) => {
         });
     }
 });
+/**
+ * PATCH /api/games/:gameId
+ * Updates the status and result of a chess game.
+ */
+app.patch("/api/games/:gameId", async (req, res) => {
+    const { gameId } = req.params;
+    const { userEmail, status, result } = req.body;
 
+    if (!userEmail || !gameId || !status) {
+        return res.status(400).json({
+            error: "userEmail, gameId and status are required",
+        });
+    }
+
+    try {
+        await db
+            .collection("users")
+            .doc(userEmail)
+            .collection("games")
+            .doc(gameId)
+            .update({
+                status,
+                result: result || null,
+                endedAt: new Date(),
+            });
+
+        console.log("GAME UPDATED:", gameId, status, result);
+
+        res.json({
+            success: true,
+            gameId,
+            status,
+            result: result || null,
+        });
+    } catch (error) {
+        console.error("Game update error:", error);
+
+        res.status(500).json({
+            error: "Failed to update game",
+        });
+    }
+});
 /**
  * POST /api/analyze-position
  * Analyzes any valid chess position provided as a FEN.

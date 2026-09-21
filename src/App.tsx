@@ -76,6 +76,7 @@ function App() {
   const gameIdRef = useRef(crypto.randomUUID());
   const baseFenRef = useRef(gameRef.current.fen());
   const gameCreatedRef = useRef(false);
+  const gameCompletedRef = useRef(false);
 
   // State to trigger re-renders when gameRef mutates
   const [fen, setFen] = useState<string>(gameRef.current.fen());
@@ -315,6 +316,50 @@ function App() {
     }
   }, []);
 
+  const completeGame = useCallback(async () => {
+    if (!gameCreatedRef.current || gameCompletedRef.current) {
+      // If the game hasn't been created or is already completed, do nothing
+      return;
+    }
+
+    const game = gameRef.current;
+
+    let result = "DRAW";
+
+    if (game.isCheckmate()) {
+      result = game.turn() === "w" ? "BLACK_WINS" : "WHITE_WINS";
+    }
+
+    try {
+      const response = await fetch(
+        `http://localhost:5000/api/games/${gameIdRef.current}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            userEmail: POC_USER_EMAIL,
+            status: "completed",
+            result,
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to complete game");
+      }
+
+      const data = await response.json();
+
+      gameCompletedRef.current = true; // Mark the game as completed to prevent duplicate requests
+
+      console.log("GAME COMPLETED:", data);
+    } catch (error) {
+      console.error("Game completion failed:", error);
+    }
+  }, []);
+
   const makeMove = useCallback(
     async (
       from: string,
@@ -385,7 +430,7 @@ function App() {
 
       return false;
     },
-    [saveMove, stopAudioAndHighlight],
+    [saveMove, createGame, stopAudioAndHighlight]
   );
 
   const explainMove = useCallback(async () => {
@@ -691,6 +736,7 @@ function App() {
       // Create a new game/session for the loaded FEN
       gameIdRef.current = crypto.randomUUID();
       gameCreatedRef.current = false;
+      gameCompletedRef.current = false;
 
       baseFenRef.current = newGame.fen();
 
@@ -724,7 +770,7 @@ function App() {
     gameRef.current = new Chess();
     gameIdRef.current = crypto.randomUUID();
     gameCreatedRef.current = false;
-
+    gameCompletedRef.current = false;
     // Reset the base position to the standard starting position
     baseFenRef.current = gameRef.current.fen();
 
@@ -777,8 +823,9 @@ function App() {
   useEffect(() => {
     if (isGameOver) {
       setShowGameOverModal(true);
+      void completeGame();
     }
-  }, [isGameOver]);
+  }, [isGameOver, completeGame]);
 
   const { moveHistory, capturedByWhite, capturedByBlack } = useMemo(() => {
     const verboseHistory = gameRef.current.history({ verbose: true });
