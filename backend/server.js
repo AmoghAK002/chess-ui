@@ -473,6 +473,43 @@ app.post("/api/games", async (req, res) => {
 });
 
 /**
+ * GET /api/games
+ * Retrieves all games for a user.
+ */
+app.get("/api/games", async (req, res) => {
+    const { userEmail } = req.query;
+
+    if (!userEmail) {
+        return res.status(400).json({
+            error: "userEmail is required",
+        });
+    }
+
+    try {
+        const snapshot = await db
+            .collection("users")
+            .doc(userEmail)
+            .collection("games")
+            .get();
+
+        const games = snapshot.docs.map((doc) => doc.data());
+
+        console.log("GAMES FETCHED:", userEmail, games.length);
+
+        res.json({
+            success: true,
+            games,
+        });
+    } catch (error) {
+        console.error("Games fetch error:", error);
+
+        res.status(500).json({
+            error: "Failed to fetch games",
+        });
+    }
+});
+
+/**
 * POST /api/games/:gameId/moves
 * Saves a chess move inside an existing game.
 */
@@ -582,6 +619,49 @@ app.patch("/api/games/:gameId", async (req, res) => {
         });
     }
 });
+
+/**
+ * GET /api/games/:gameId/moves
+ * Retrieves all moves for a specific game.
+ */
+app.get("/api/games/:gameId/moves", async (req, res) => {
+    const { gameId } = req.params;
+    const { userEmail } = req.query;
+
+    if (!userEmail || !gameId) {
+        return res.status(400).json({
+            error: "userEmail and gameId are required",
+        });
+    }
+
+    try {
+        const snapshot = await db
+            .collection("users")
+            .doc(userEmail)
+            .collection("games")
+            .doc(gameId)
+            .collection("moves")
+            .orderBy("moveIndex")
+            .get();
+
+        const moves = snapshot.docs.map((doc) => doc.data());
+
+        console.log("MOVES FETCHED:", gameId, moves.length);
+
+        res.json({
+            success: true,
+            gameId,
+            moves,
+        });
+    } catch (error) {
+        console.error("Moves fetch error:", error);
+
+        res.status(500).json({
+            error: "Failed to fetch moves",
+        });
+    }
+});
+
 /**
  * POST /api/analyze-position
  * Analyzes any valid chess position provided as a FEN.
