@@ -1,9 +1,8 @@
 require("dotenv").config();
 
-const path = require("path");
+const { analyzeFenWithStockfish } = require("./services/stockfishService");
 const express = require("express");
 const cors = require("cors");
-const { spawn } = require("child_process");
 const { GoogleGenAI } = require("@google/genai");
 const wav = require("wav");
 const { Chess } = require("chess.js");
@@ -46,107 +45,6 @@ function pcmToWavDataUri(pcmBuffer, sampleRate = 24000) {
 
         writer.write(pcmBuffer);
         writer.end();
-    });
-}
-
-/**
- * Runs Stockfish engine on a FEN position to depth 15 with MultiPV
- */
-function analyzeFenWithStockfish(fen, depth = 15, multiPV = 5) {
-    return new Promise((resolve, reject) => {
-        const stockfishPath = path.join(__dirname, "stockfish-windows-x86-64-avx2.exe");
-        const stockfish = spawn(stockfishPath, [], { cwd: __dirname });
-
-        let output = "";
-        let isResolved = false;
-
-        const timer = setTimeout(() => {
-            if (!isResolved) {
-                isResolved = true;
-                stockfish.kill();
-                reject(new Error("Stockfish analysis timed out"));
-            }
-        }, 12000);
-
-        stockfish.stdout.on("data", (data) => {
-            output += data.toString();
-
-            if (output.includes("bestmove")) {
-                if (isResolved) return;
-                isResolved = true;
-                clearTimeout(timer);
-                stockfish.kill();
-
-                const lines = output.split(/\r?\n/);
-                const topMoves = [];
-
-                for (const line of lines) {
-                    if (!line.includes(`info depth ${depth}`)) {
-                        continue;
-                    }
-
-                    const multipvMatch = line.match(/multipv (\d+)/);
-                    const scoreMatch = line.match(/score cp (-?\d+)/);
-                    const mateMatch = line.match(/score mate (-?\d+)/);
-                    const pvIndex = line.lastIndexOf(" pv ");
-
-                    if (!multipvMatch || pvIndex === -1) {
-                        continue;
-                    }
-
-                    const pv = line.substring(pvIndex + 4).trim();
-                    const moves = pv.split(/\s+/);
-
-                    if (moves.length === 0) {
-                        continue;
-                    }
-
-                    let san = moves[0];
-                    try {
-                        const chess = new Chess(fen);
-                        const moveResult = chess.move({
-                            from: moves[0].substring(0, 2),
-                            to: moves[0].substring(2, 4),
-                            promotion: moves[0].length > 4 ? moves[0][4] : undefined
-                        });
-                        if (moveResult) {
-                            san = moveResult.san;
-                        }
-                    } catch (e) {
-                        // Keep UCI as fallback
-                    }
-
-                    topMoves.push({
-                        rank: Number(multipvMatch[1]),
-                        move: moves[0],
-                        san: san,
-                        score: scoreMatch ? Number(scoreMatch[1]) : (mateMatch ? `mate ${mateMatch[1]}` : 0),
-                        pv: pv
-                    });
-                }
-
-                topMoves.sort((a, b) => a.rank - b.rank);
-                resolve(topMoves);
-            }
-        });
-
-        stockfish.stderr.on("data", (data) => {
-            console.error("STOCKFISH ERROR:", data.toString());
-        });
-
-        stockfish.on("error", (error) => {
-            if (!isResolved) {
-                isResolved = true;
-                clearTimeout(timer);
-                reject(error);
-            }
-        });
-
-        stockfish.stdin.write("uci\n");
-        stockfish.stdin.write(`setoption name MultiPV value ${multiPV}\n`);
-        stockfish.stdin.write("isready\n");
-        stockfish.stdin.write(`position fen ${fen}\n`);
-        stockfish.stdin.write(`go depth ${depth}\n`);
     });
 }
 
@@ -658,6 +556,82 @@ app.get("/api/games/:gameId/moves", async (req, res) => {
 
         res.status(500).json({
             error: "Failed to fetch moves",
+        });
+    }
+});
+
+/**
+ * POST /api/analyze-game-move
+ * Retrieves one stored move and analyzes its positions with Stockfish.
+ */
+app.post("/api/analyze-game-move", async (req, res) => {
+    const { userEmail, gameId, moveIndex } = req.body;
+
+    if (!userEmail || !gameId || moveIndex === undefined) {
+        return res.status(400).json({
+            error: "userEmail, gameId and moveIndex are required",
+        });
+    }
+
+    try {
+        const moveRef = db
+            .collection("users")
+            .doc(userEmail)
+            .collection("games")
+            .doc(gameId)
+            .collection("moves")
+            .doc(String(moveIndex));
+
+        const moveSnapshot = await moveRef.get();
+
+        if (!moveSnapshot.exists) {
+            return res.status(404).json({
+                error: "Move not found",
+            });
+        }
+
+        const move = moveSnapshot.data();
+
+        console.log("\n========== STORED MOVE ==========");
+        console.log("Game ID:", gameId);
+        console.log("Move Index:", move.moveIndex);
+        console.log("SAN:", move.san);
+        console.log("Player:", move.playerColor);
+        console.log("Before FEN:", move.beforeFen);
+        console.log("After FEN:", move.afterFen);
+        console.log("=================================\n");
+
+        const [topMovesBefore, topMovesAfter] = await Promise.all([
+            analyzeFenWithStockfish(move.beforeFen, 15, 5),
+            analyzeFenWithStockfish(move.afterFen, 15, 5),
+        ]);
+
+        const bestMoveBefore =
+            topMovesBefore.length > 0 ? topMovesBefore[0] : null;
+
+        const bestResponseAfter =
+            topMovesAfter.length > 0 ? topMovesAfter[0] : null;
+
+        console.log("\n========== GAME MOVE ANALYSIS ==========");
+        console.log("Played Move:", move.san);
+        console.log("Best Move Before:", bestMoveBefore);
+        console.log("Best Response After:", bestResponseAfter);
+        console.log("========================================\n");
+
+        res.json({
+            success: true,
+            gameId,
+            move,
+            bestMoveBefore,
+            bestResponseAfter,
+            topMovesBefore,
+            topMovesAfter,
+        });
+    } catch (error) {
+        console.error("Game move analysis error:", error);
+
+        res.status(500).json({
+            error: "Failed to analyze game move",
         });
     }
 });
