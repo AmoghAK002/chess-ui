@@ -3,13 +3,13 @@ require("dotenv").config();
 const { analyzeFenWithStockfish } = require("./services/stockfishService");
 const express = require("express");
 const cors = require("cors");
-const { GoogleGenAI } = require("@google/genai");
+const {
+    generateGeminiContent,
+    generateGeminiJson,
+    generateGeminiTTS,
+} = require("./services/geminiService");
 const wav = require("wav");
 const { Chess } = require("chess.js");
-
-const ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY,
-});
 
 const app = express();
 
@@ -55,20 +55,7 @@ async function generateTTSForText(text) {
     if (!text || !text.trim()) return null;
 
     try {
-        const ttsResponse = await ai.models.generateContent({
-            model: "gemini-2.5-flash-preview-tts",
-            contents: text,
-            config: {
-                responseModalities: ["AUDIO"],
-                speechConfig: {
-                    voiceConfig: {
-                        prebuiltVoiceConfig: {
-                            voiceName: "Algenib",
-                        },
-                    },
-                },
-            },
-        });
+        const ttsResponse = await generateGeminiTTS(text);
 
         const part = ttsResponse.candidates?.[0]?.content?.parts?.[0];
         if (part?.inlineData?.data) {
@@ -265,13 +252,7 @@ JSON Format:
 Note: For any move object inside segments, 'from' and 'to' MUST be valid board squares (e.g. "e2", "e4", "g1", "f3"). Only include a move object if that specific segment explicitly discusses that specific chess move. Otherwise set move to null.
 `;
 
-        const geminiResponse = await ai.models.generateContent({
-            model: "gemini-3.5-flash",
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json"
-            }
-        });
+        const geminiResponse = await generateGeminiJson(prompt);
 
         const parsedJson = parseGeminiJson(geminiResponse.text);
 
@@ -733,13 +714,7 @@ Otherwise use:
 "move": null
 `;
 
-        const geminiResponse = await ai.models.generateContent({
-            model: "gemini-3.5-flash",
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json"
-            }
-        });
+        const geminiResponse = await generateGeminiJson(prompt);
 
         const parsedJson = parseGeminiJson(geminiResponse.text);
 
@@ -857,13 +832,7 @@ Respond ONLY with a valid JSON object:
 If a segment discusses a specific move, provide its 'from' and 'to' squares (e.g. e2 -> e4). Otherwise set move to null.
 `;
 
-        const geminiResponse = await ai.models.generateContent({
-            model: "gemini-3.5-flash",
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json"
-            }
-        });
+        const geminiResponse = await generateGeminiJson(prompt);
 
         const parsedJson = parseGeminiJson(geminiResponse.text);
 
@@ -885,10 +854,7 @@ If a segment discusses a specific move, provide its 'from' and 'to' squares (e.g
 
 app.get("/api/test-gemini", async (req, res) => {
     try {
-        const response = await ai.models.generateContent({
-            model: "gemini-3.5-flash",
-            contents: "Say hello in one short sentence.",
-        });
+        const response = await generateGeminiContent(prompt);
 
         res.json({
             response: response.text,
