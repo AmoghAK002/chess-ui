@@ -42,9 +42,37 @@ async function generateGeminiTTS(text) {
     return response;
 }
 
+async function generateGeminiJsonWithRetry(prompt, maxAttempts = 3) {
+    let lastError;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            return await generateGeminiJson(prompt);
+        } catch (error) {
+            lastError = error;
+
+            console.log(
+                `Gemini request failed (attempt ${attempt}/${maxAttempts}):`,
+                error.message
+            );
+
+            if (attempt < maxAttempts) {
+                const delay = attempt * 1000;
+
+                console.log(`Retrying Gemini in ${delay}ms...`);
+
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+    }
+
+    throw lastError;
+}
+
 module.exports = {
     ai,
     generateGeminiContent,
     generateGeminiJson,
     generateGeminiTTS,
+    generateGeminiJsonWithRetry,
 };

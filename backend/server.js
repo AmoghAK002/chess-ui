@@ -6,6 +6,7 @@ const cors = require("cors");
 const {
     generateGeminiContent,
     generateGeminiJson,
+    generateGeminiJsonWithRetry,
     generateGeminiTTS,
 } = require("./services/geminiService");
 const wav = require("wav");
@@ -19,6 +20,10 @@ app.use(express.json());
 const {
     evaluateMoveQuality,
 } = require("./services/chessEvaluationService");
+
+const {
+    generateFallbackCoaching,
+} = require("./services/coachingService");
 
 const PORT = 5000;
 
@@ -267,9 +272,26 @@ JSON Format:
 Note: For any move object inside segments, 'from' and 'to' MUST be valid board squares (e.g. "e2", "e4", "g1", "f3"). Only include a move object if that specific segment explicitly discusses that specific chess move. Otherwise set move to null.
 `;
 
-        const geminiResponse = await generateGeminiJson(prompt);
+        let parsedJson;
 
-        const parsedJson = parseGeminiJson(geminiResponse.text);
+        try {
+            const geminiResponse = await generateGeminiJsonWithRetry(prompt);
+
+            parsedJson = parseGeminiJson(geminiResponse.text);
+        } catch (error) {
+            console.error(
+                "Gemini unavailable. Using fallback coaching:",
+                error.message
+            );
+
+            parsedJson = generateFallbackCoaching(
+                evaluation,
+                san,
+                bestMoveBefore?.san,
+                bestResponseAfter?.san,
+                playerColor
+            );
+        }
 
         console.log("\n========== GEMINI COACH RESPONSE ==========");
         console.log("Narrative:");
