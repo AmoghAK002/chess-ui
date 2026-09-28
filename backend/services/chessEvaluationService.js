@@ -293,3 +293,7 @@ function evaluateMoveQuality(
         quality,
     };
 }
+
+    module.exports = {
+    evaluateMoveQuality,
+};

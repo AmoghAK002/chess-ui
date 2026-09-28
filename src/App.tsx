@@ -430,7 +430,7 @@ function App() {
 
       return false;
     },
-    [saveMove, createGame, stopAudioAndHighlight]
+    [saveMove, createGame, stopAudioAndHighlight] 
   );
 
   const explainMove = useCallback(async () => {

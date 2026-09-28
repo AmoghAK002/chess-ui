@@ -167,6 +167,16 @@ app.post("/api/analyze", async (req, res) => {
         const bestMoveBefore = topMovesBefore.length > 0 ? topMovesBefore[0] : null;
         const bestResponseAfter = topMovesAfter.length > 0 ? topMovesAfter[0] : null;
 
+        const playerColorCode = playerColor === "WHITE" ? "w" : "b";
+
+        const evaluation = evaluateMoveQuality(
+            bestMoveBefore?.score ?? null,
+            playerMoveResult?.score ?? null,
+            playerColorCode,
+            playerColorCode,
+            playerColorCode
+        );
+
         let moveQuality = "playable_move";
         if (!playerMoveResult) {
             moveQuality = "not_in_top_5";
@@ -185,7 +195,8 @@ app.post("/api/analyze", async (req, res) => {
             bestMoveBeforeUci: bestMoveBefore ? bestMoveBefore.move : null,
             bestResponseAfter: bestResponseAfter ? bestResponseAfter.san : null,
             bestResponseAfterUci: bestResponseAfter ? bestResponseAfter.move : null,
-            quality: moveQuality
+            quality: moveQuality,
+            evaluation: evaluation
         };
 
         console.log("\n========== PLAYER MOVE ANALYSIS ==========");
@@ -597,11 +608,27 @@ app.post("/api/analyze-game-move", async (req, res) => {
         const bestResponseAfter =
             topMovesAfter.length > 0 ? topMovesAfter[0] : null;
 
+        const playedMoveBefore = topMovesBefore.find(
+            (candidate) => candidate.move === move.playerMove
+        );
+
+        // Evaluate the move from the player's perspective.
+        //
+        // Before the player's move, it is the player's turn.
+        // After the player's move, it is the opponent's turn.
         const evaluation = evaluateMoveQuality(
             bestMoveBefore?.score ?? null,
-            bestResponseAfter?.score ?? null,
-            move.playerColor
+            playedMoveBefore?.score ?? null,
+            move.playerColor,
+            move.playerColor === "w" ? "w" : "b",
+            move.playerColor === "w" ? "w" : "b"
         );
+
+        // Print the complete move evaluation so we can verify
+        // the real API result before sending it to the frontend.
+        console.log("\n========== PLAYER MOVE EVALUATION ==========");
+        console.log(JSON.stringify(evaluation, null, 2));
+        console.log("============================================\n");
 
         console.log("\n========== GAME MOVE ANALYSIS ==========");
         console.log("Played Move:", move.san);
