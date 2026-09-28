@@ -73,6 +73,77 @@ function calculateEvaluationLoss(bestScore, actualScore) {
     return null;
 }
 
+// Classifies a normal centipawn evaluation loss into a
+// human-readable move-quality category.
+//
+// The thresholds are configurable engineering defaults.
+// They can be tuned later using real game data.
+function classifyEvaluationLoss(evaluationLoss) {
+    if (evaluationLoss === null) {
+        return null;
+    }
+
+    if (evaluationLoss === 0) {
+        return "best_move";
+    }
+
+    if (evaluationLoss <= 20) {
+        return "excellent";
+    }
+
+    if (evaluationLoss <= 50) {
+        return "good";
+    }
+
+    if (evaluationLoss <= 100) {
+        return "inaccuracy";
+    }
+
+    if (evaluationLoss <= 200) {
+        return "mistake";
+    }
+
+    return "blunder";
+}
+
+// Classifies a position where Stockfish reports a forced checkmate.
+//
+// Mate scores are different from centipawn scores:
+//
+// "mate 3"  → the player can force checkmate in 3 moves.
+// "mate 5"  → the player can force checkmate in 5 moves.
+// "mate -3" → the player is getting checkmated in 3 moves.
+//
+// The outcome change is handled separately because
+// winning → losing is much more serious than simply
+// increasing the mate distance.
+function classifyMateEvaluation(mateLoss, mateOutcomeChange) {
+    // A winning position becoming losing is a major error.
+    if (mateOutcomeChange === "win_to_loss") {
+        return "blunder";
+    }
+
+    // A losing position becoming winning is a very positive change.
+    if (mateOutcomeChange === "loss_to_win") {
+        return "best_move";
+    }
+
+    // If there is no mate-distance information, we cannot classify it.
+    if (mateLoss === null) {
+        return null;
+    }
+
+    // The player still has a forced mate and the distance did not worsen.
+    if (mateLoss === 0) {
+        return "best_move";
+    }
+
+    // The player still wins, but the move makes the forced mate longer.
+    // For now, every positive mate-distance deterioration is classified
+    // as a mistake. We can tune this later with real game data.
+    return "mistake";
+}
+
 // Calculates the deterioration when both Stockfish scores are mate scores.
 // Mate scores are already expressed from the player's perspective.
 //
@@ -149,12 +220,12 @@ function getMateOutcomeChange(bestScore, actualScore) {
 
 // Evaluates the player's actual move against Stockfish's best move.
 //
-// This function first converts both Stockfish scores into the player's
-// perspective. It then determines whether the move caused:
-// 1. Normal centipawn evaluation loss
-// 2. Mate-distance loss
-// 3. A winning → losing transition
-// 4. A losing → winning transition
+// The function:
+// 1. Converts both Stockfish scores into the player's perspective.
+// 2. Calculates normal centipawn loss.
+// 3. Calculates mate-distance loss.
+// 4. Detects winning/losing outcome changes.
+// 5. Converts those measurements into a human-readable quality.
 function evaluateMoveQuality(
     bestScore,
     actualScore,
@@ -162,21 +233,21 @@ function evaluateMoveQuality(
     beforeSideToMove,
     afterSideToMove
 ) {
-    // Convert the best-move evaluation into the player's perspective.
+    // Convert Stockfish's best-move score into the player's perspective.
     const playerBestScore = getPlayerScore(
         bestScore,
         playerColor,
         beforeSideToMove
     );
 
-    // Convert the actual-position evaluation into the player's perspective.
+    // Convert Stockfish's actual-position score into the player's perspective.
     const playerActualScore = getPlayerScore(
         actualScore,
         playerColor,
         afterSideToMove
     );
 
-    // Calculate normal centipawn loss when both scores are numerical.
+    // Calculate normal centipawn loss.
     const evaluationLoss = calculateEvaluationLoss(
         playerBestScore,
         playerActualScore
@@ -188,12 +259,30 @@ function evaluateMoveQuality(
         playerActualScore
     );
 
-    // Detect whether the move changed the game outcome
-    // from winning to losing or losing to winning.
+    // Detect a major outcome change such as winning → losing.
     const mateOutcomeChange = getMateOutcomeChange(
         playerBestScore,
         playerActualScore
     );
+
+    let quality = null;
+
+    // If we have a normal numerical evaluation loss,
+    // use the centipawn classifier.
+    if (evaluationLoss !== null) {
+        quality = classifyEvaluationLoss(evaluationLoss);
+    }
+
+    // If the position involves mate scores, use the mate classifier.
+    if (
+        isMateScore(playerBestScore) ||
+        isMateScore(playerActualScore)
+    ) {
+        quality = classifyMateEvaluation(
+            mateLoss,
+            mateOutcomeChange
+        );
+    }
 
     return {
         bestScore: playerBestScore,
@@ -201,5 +290,6 @@ function evaluateMoveQuality(
         evaluationLoss,
         mateLoss,
         mateOutcomeChange,
+        quality,
     };
 }
