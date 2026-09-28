@@ -16,6 +16,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const {
+    evaluateMoveQuality,
+} = require("./services/chessEvaluationService");
+
 const PORT = 5000;
 
 const { db } = require("./firebase-admin");
@@ -593,6 +597,12 @@ app.post("/api/analyze-game-move", async (req, res) => {
         const bestResponseAfter =
             topMovesAfter.length > 0 ? topMovesAfter[0] : null;
 
+        const evaluation = evaluateMoveQuality(
+            bestMoveBefore?.score ?? null,
+            bestResponseAfter?.score ?? null,
+            move.playerColor
+        );
+
         console.log("\n========== GAME MOVE ANALYSIS ==========");
         console.log("Played Move:", move.san);
         console.log("Best Move Before:", bestMoveBefore);
@@ -605,6 +615,7 @@ app.post("/api/analyze-game-move", async (req, res) => {
             move,
             bestMoveBefore,
             bestResponseAfter,
+            evaluation,
             topMovesBefore,
             topMovesAfter,
         });

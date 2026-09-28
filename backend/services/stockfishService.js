@@ -39,6 +39,22 @@ function analyzeFenWithStockfish(fen, depth = 15, multiPV = 5) {
                         continue;
                     }
 
+                    // Stockfish sends its evaluation as plain text, for example:
+                    // "score cp 44"  → normal evaluation of +44 centipawns (+0.44 pawns)
+                    // "score cp -37" → normal evaluation of -37 centipawns (-0.37 pawns)
+                    //
+                    // The regex searches the Stockfish text for these patterns.
+                    // (-?\d+) means:
+                    //   - "-" is optional because the score can be positive or negative
+                    //   - "\d" means a digit (0-9)
+                    //   - "+" means one or more digits
+                    //
+                    // line.match(...) returns the matched text and the captured number.
+                    // scoreMatch[1] / mateMatch[1] contains the actual score as a string.
+                    // We later use Number(...) to convert that string into a JavaScript number.
+                    //
+                    // Stockfish can also report a forced mate instead of a centipawn score,
+                    // so we check both "score cp" and "score mate".
                     const multipvMatch = line.match(/multipv (\d+)/);
                     const scoreMatch = line.match(/score cp (-?\d+)/);
                     const mateMatch = line.match(/score mate (-?\d+)/);
