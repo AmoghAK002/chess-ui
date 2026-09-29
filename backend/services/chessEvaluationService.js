@@ -47,6 +47,37 @@ function getMateScore(score) {
     return Number.isNaN(mateNumber) ? null : mateNumber;
 }
 
+// Determines the outcome represented by a Stockfish score.
+//
+// Normal number → normal position.
+// Positive mate → player can force checkmate.
+// Negative mate → player is getting checkmated.
+function getEvaluationOutcome(score) {
+    if (typeof score === "number") {
+        return "normal";
+    }
+
+    if (!isMateScore(score)) {
+        return null;
+    }
+
+    const mateNumber = getMateScore(score);
+
+    if (mateNumber === null) {
+        return null;
+    }
+
+    if (mateNumber > 0) {
+        return "mate_win";
+    }
+
+    if (mateNumber < 0) {
+        return "mate_loss";
+    }
+
+    return null;
+}
+
 // Calculates how much evaluation the player lost by choosing their actual move
 // instead of the engine's best move.
 //
@@ -185,6 +216,49 @@ function calculateMateLoss(bestScore, actualScore) {
     return null;
 }
 
+// Detects important transitions between normal positions and
+// forced checkmate positions.
+//
+// Examples:
+// mate_win -> normal     = lost forced win
+// normal   -> mate_loss  = entered forced loss
+// normal   -> mate_win   = created forced win
+// mate_loss -> normal    = escaped forced mate
+function getEvaluationOutcomeChange(bestScore, actualScore) {
+    const bestOutcome = getEvaluationOutcome(bestScore);
+    const actualOutcome = getEvaluationOutcome(actualScore);
+
+    if (bestOutcome === null || actualOutcome === null) {
+        return null;
+    }
+
+    if (bestOutcome === "mate_win" && actualOutcome === "normal") {
+        return "win_to_normal";
+    }
+
+    if (bestOutcome === "normal" && actualOutcome === "mate_loss") {
+        return "normal_to_loss";
+    }
+
+    if (bestOutcome === "normal" && actualOutcome === "mate_win") {
+        return "normal_to_win";
+    }
+
+    if (bestOutcome === "mate_loss" && actualOutcome === "normal") {
+        return "loss_to_normal";
+    }
+
+    if (bestOutcome === "mate_win" && actualOutcome === "mate_loss") {
+        return "win_to_loss";
+    }
+
+    if (bestOutcome === "mate_loss" && actualOutcome === "mate_win") {
+        return "loss_to_win";
+    }
+
+    return null;
+}
+
 // Detects whether a move changes the player's position
 // from winning to losing, or from losing to winning.
 //
@@ -265,7 +339,21 @@ function evaluateMoveQuality(
         playerActualScore
     );
 
+    const evaluationOutcomeChange = getEvaluationOutcomeChange(
+        playerBestScore,
+        playerActualScore
+    );
+
     let quality = null;
+
+    // Handle major evaluation outcome changes first.
+    if (
+        evaluationOutcomeChange === "win_to_normal" ||
+        evaluationOutcomeChange === "normal_to_loss" ||
+        evaluationOutcomeChange === "win_to_loss"
+    ) {
+        quality = "blunder";
+    }
 
     // If we have a normal numerical evaluation loss,
     // use the centipawn classifier.
@@ -275,8 +363,11 @@ function evaluateMoveQuality(
 
     // If the position involves mate scores, use the mate classifier.
     if (
-        isMateScore(playerBestScore) ||
-        isMateScore(playerActualScore)
+        quality === null &&
+        (
+            isMateScore(playerBestScore) ||
+            isMateScore(playerActualScore)
+        )
     ) {
         quality = classifyMateEvaluation(
             mateLoss,
@@ -291,9 +382,9 @@ function evaluateMoveQuality(
         mateLoss,
         mateOutcomeChange,
         quality,
+        evaluationOutcomeChange,
     };
 }
-
-    module.exports = {
+module.exports = {
     evaluateMoveQuality,
 };

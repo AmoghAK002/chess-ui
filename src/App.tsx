@@ -100,6 +100,7 @@ function App() {
 
   // Audio queue & race condition management
   const requestIdRef = useRef<number>(0);
+  const analysisInProgressRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -430,11 +431,13 @@ function App() {
 
       return false;
     },
-    [saveMove, createGame, stopAudioAndHighlight] 
+    [saveMove, createGame, stopAudioAndHighlight],
   );
 
   const explainMove = useCallback(async () => {
-    if (!pendingMove) return;
+    if (!pendingMove || analysisInProgressRef.current) return;
+
+    analysisInProgressRef.current = true;
 
     requestIdRef.current++;
     const currentRequestId = requestIdRef.current;
@@ -487,6 +490,7 @@ function App() {
         },
       ]);
     } finally {
+      analysisInProgressRef.current = false;
       setIsExplaining(false);
     }
   }, [pendingMove, playSegments, stopAudioAndHighlight]);

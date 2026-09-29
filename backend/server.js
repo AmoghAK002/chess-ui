@@ -202,7 +202,7 @@ app.post("/api/analyze", async (req, res) => {
             bestMoveBeforeUci: bestMoveBefore ? bestMoveBefore.move : null,
             bestResponseAfter: bestResponseAfter ? bestResponseAfter.san : null,
             bestResponseAfterUci: bestResponseAfter ? bestResponseAfter.move : null,
-            quality: moveQuality,
+            quality: evaluation.quality ?? moveQuality,
             evaluation: evaluation
         };
 
