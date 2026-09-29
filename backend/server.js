@@ -174,12 +174,14 @@ app.post("/api/analyze", async (req, res) => {
 
         const playerColorCode = playerColor === "WHITE" ? "w" : "b";
 
+        const opponentColorCode = playerColorCode === "w" ? "b" : "w";
+
         const evaluation = evaluateMoveQuality(
             bestMoveBefore?.score ?? null,
-            playerMoveResult?.score ?? null,
+            bestResponseAfter?.score ?? null,
             playerColorCode,
             playerColorCode,
-            playerColorCode
+            opponentColorCode
         );
 
         let moveQuality = "playable_move";
