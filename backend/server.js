@@ -25,6 +25,10 @@ const {
     generateFallbackCoaching,
 } = require("./services/coachingService");
 
+const {
+    analyzeGameFromMoves,
+} = require("./services/gameAnalysisService");
+
 const PORT = 5000;
 
 const { db } = require("./firebase-admin");
@@ -495,6 +499,51 @@ app.post("/api/games/:gameId/moves", async (req, res) => {
         });
     }
 });
+
+app.get("/api/games/:gameId/analyze", async (req, res) => {
+    const { gameId } = req.params;
+    const { userEmail } = req.query;
+
+    if (!userEmail || !gameId) {
+        return res.status(400).json({
+            error: "userEmail and gameId are required",
+        });
+    }
+
+    try {
+        const snapshot = await db
+            .collection("users")
+            .doc(userEmail)
+            .collection("games")
+            .doc(gameId)
+            .collection("moves")
+            .orderBy("moveIndex")
+            .get();
+
+        const moves = snapshot.docs.map((doc) => doc.data());
+
+        const positions = analyzeGameFromMoves(moves);
+
+        console.log(
+            "GAME RECONSTRUCTED:",
+            gameId,
+            positions.length
+        );
+
+        res.json({
+            success: true,
+            gameId,
+            positions,
+        });
+    } catch (error) {
+        console.error("Game analysis error:", error);
+
+        res.status(500).json({
+            error: "Failed to analyze game",
+        });
+    }
+});
+
 /**
  * PATCH /api/games/:gameId
  * Updates the status and result of a chess game.
